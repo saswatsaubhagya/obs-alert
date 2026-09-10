@@ -12,3 +12,75 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  createdAt    DateTime      @default(now())
+  overlays     Overlay[]
+  ingestKeys   IngestKey[]
+  alertConfigs AlertConfig[]
+  alertLogs    AlertLog[]
+}
+
+model Overlay {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  name      String   @default("Main")
+  createdAt DateTime @default(now())
+}
+
+model IngestKey {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  hash       String    @unique
+  prefix     String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model EventType {
+  key    String @id
+  label  String
+  fields Json
+}
+
+model AlertConfig {
+  id            String  @id @default(cuid())
+  userId        String
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventTypeKey  String
+  enabled       Boolean @default(true)
+  template      String
+  titleTemplate String?
+  style         Json
+  durationMs    Int     @default(5000)
+  imageUrl      String?
+  soundUrl      String?
+  soundVolume   Int     @default(80)
+  minAmount     Int?
+  locale        String  @default("en-US")
+
+  @@unique([userId, eventTypeKey])
+}
+
+model AlertLog {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventTypeKey String
+  payload      Json
+  renderedText String
+  source       String
+  deliveredTo  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}

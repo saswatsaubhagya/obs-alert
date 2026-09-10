@@ -1,0 +1,1 @@
+So we will make an alert system for OBS. Requirement is that whenever you send some notification via API, then that alert will show on OBS. You just need to add the browser source and that should work.

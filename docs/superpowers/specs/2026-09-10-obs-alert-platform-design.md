@@ -16,16 +16,16 @@ result in a live preview that is the real overlay.
 ### In scope (this spec)
 
 - Email + password auth, sessions.
-- Public alert API: `POST /api/v1/alerts`, bearer-key authenticated, multiple named
-  revocable keys per user.
+- Public alert API: `POST /api/v1/alerts/<ingest_key>`, authenticated by a
+  per-user secret key in the URL path. Multiple named, revocable keys per user.
 - Four built-in event types: `donation`, `follow`, `sub`, `raid`.
 - Per-event-type customization: message template with variables, title template,
   style tokens (colors, font, size, position, width, radius, animation), duration,
   image URL, sound URL + volume, and a `minAmount` filter for donations.
 - Overlay page + SSE endpoint keyed by a read-only overlay token, with a serial
   alert queue.
-- Dashboard: event-type editor, live preview, test fire, manual send form, API key
-  management, overlay URL, token rotation.
+- Dashboard: event-type editor, live preview, test fire, manual send form, ingest
+  key management, overlay URL, token rotation.
 - Alert log (raw payload + rendered text) as the debugging surface.
 
 ### Explicitly deferred
@@ -35,13 +35,26 @@ sound/image library; moderation and blocklists; alert history UI; per-tier
 donation styling; alert cooldowns; multiple overlays/scenes per user; horizontal
 scaling (multi-instance).
 
-### Decisions reversed during brainstorming
+### Auth choice for the alert API
 
-The ingest endpoint was initially designed as a per-user secret key in the URL
-path. It became `Authorization: Bearer` header auth on a versioned route once the
-scope clarified that this is a public API for arbitrary clients, not a private
-endpoint for the author's own n8n instance. Header auth is the conventional shape
-for a documented API and keeps keys out of proxy logs.
+The key travels as a URL path segment: `POST /api/v1/alerts/<ingest_key>`. This is
+a deliberate trade of hygiene for onboarding — a caller pastes one URL into an
+HTTP node and is done, with no header configuration, which is the dominant setup
+path for n8n, Zapier, Make, and webhook-forwarding services. Header auth
+(`Authorization: Bearer`) was designed first and rejected for that reason.
+
+The cost is real and is mitigated rather than ignored: a secret in a path is
+recorded by every access log and proxy it passes through. Therefore:
+
+- The reverse proxy must not log the path for `/api/v1/alerts/*` (nginx: a
+  dedicated `location` with `access_log off`; Caddy: omit the URI or skip the
+  route in the log config).
+- Application logs record the key's `prefix` and never the full path or key.
+- Keys are individually revocable and rotatable, so a key found in a log is
+  cheap to retire.
+- The route accepts `Authorization: Bearer <key>` as an equivalent alternative for
+  callers that prefer it. Same lookup, same key records — one extra branch, and it
+  gives security-conscious users a path that keeps the secret out of logs.
 
 ## Stack
 
@@ -58,8 +71,8 @@ for a documented API and keeps keys out of proxy logs.
   n8n  |  Zapier/Make  |  curl/custom backend  |  Dashboard "Send alert" panel
    +--------+---------------+------------------+-----------+
                                            |
-        POST /api/v1/alerts                |   dashboard uses the same code path,
-        Authorization: Bearer <api_key>    |   authenticated by session not api_key
+   POST /api/v1/alerts/<ingest_key>        |   dashboard uses the same code path,
+   (or Bearer header, same key)            |   authenticated by session not a key
         { "type":"donation", "name":"bob",
           "amount":500, "currency":"INR", "message":"gg" }
                               |
@@ -68,7 +81,7 @@ for a documented API and keeps keys out of proxy logs.
                     | sendAlert(userId,  |   Postgres / Prisma
                     |           payload) |<-- EventType schema
                     |  1 validate vs     |    AlertConfig (template + style)
-                    |    type schema     |    ApiKey, AlertLog
+                    |    type schema     |    IngestKey, AlertLog
                     |  2 render template |
                     |  3 persist AlertLog|
                     |  4 hub.publish     |
@@ -84,7 +97,7 @@ for a documented API and keeps keys out of proxy logs.
 
 1. **One core function, three entrances.** `sendAlert(userId, payload, source)` is
    the only code that validates, renders, logs, and publishes. The API route
-   resolves an api_key to a userId; the dashboard route resolves a session to a
+   resolves an ingest key to a userId; the dashboard route resolves a session to a
    userId; test fire calls it with `source: 'test'`. No entrance can skip
    validation.
 2. **The server renders; the overlay displays.** Template interpolation and
@@ -95,9 +108,10 @@ for a documented API and keeps keys out of proxy logs.
 3. **Rendered output is data, never markup.** The overlay writes every value with
    `textContent`. Donor-controlled text (`name`, `message`) cannot become markup on
    any path.
-4. **Two separate secrets.** `api_key` (client -> platform, write) and
-   `overlay_token` (platform -> OBS, read-only stream). A leaked overlay token
-   cannot fire alerts. Both are rotatable from the dashboard.
+4. **Two separate secrets.** `ingest_key` (client -> platform, write) and
+   `overlay_token` (platform -> OBS, read-only stream). Neither is derivable from
+   the other, so a leaked overlay token cannot fire alerts and a leaked ingest key
+   cannot read the alert stream. Both are rotatable from the dashboard.
 5. **One schema, two validators.** An event type's field list drives both the API
    validator and the generated dashboard send form, so a manual send cannot produce
    a shape the API would reject.
@@ -133,8 +147,9 @@ Overlay       id, userId, token (unique, 32 random bytes), name, createdAt
               // one per user in this phase; a table rather than a column so
               // multiple overlays/scenes need no migration later
 
-ApiKey        id, userId, name, hash, prefix, lastUsedAt, revokedAt, createdAt
-              // plaintext shown once at creation, never stored
+IngestKey     id, userId, name, hash, prefix, lastUsedAt, revokedAt, createdAt
+              // plaintext shown once at creation, never stored; the URL segment is
+              // hashed on arrival and looked up by hash
 
 EventType     key, label, fields Json
               // GLOBAL rows (no userId), seeded: donation, follow, sub, raid
@@ -155,9 +170,11 @@ Notes:
   `userId` for user-defined types without migrating existing configs.
 - `AlertConfig` rows are created lazily on first save. A missing row means built-in
   defaults, so a new signup's alerts work before they open the editor.
-- API keys are hashed with sha256 rather than a slow KDF: keys are high-entropy
-  random values, not human passwords, and key auth is on the hot path. `prefix` is
-  stored in plaintext so the dashboard can identify a key (`oba_live_7f3a...`).
+- Ingest keys are hashed with sha256 rather than a slow KDF: keys are
+  high-entropy random values, not human passwords, and key lookup is on the hot
+  path. The key arriving in the URL path is hashed and matched against `hash`, so
+  the database never holds a usable key. `prefix` is stored in plaintext so the
+  dashboard can identify a key (`oba_live_7f3a...`).
 - `AlertLog` is the answer to "my workflow fired but nothing appeared." It needs a
   retention cap (delete rows older than 30 days) or it grows without bound.
 
@@ -192,8 +209,9 @@ result    { id, title: "DONATION", text: "bob donated INR 500.00!",
 - Live preview is the real overlay page in a same-origin iframe, updated via
   `postMessage`. "Test fire" calls `sendAlert(..., source: 'test')`, so it travels
   the real pipeline to the real overlay in OBS.
-- `/dashboard/settings` — overlay URL with copy button, overlay token rotation, API
-  key create / name / revoke.
+- `/dashboard/settings` — overlay URL with copy button, overlay token rotation,
+  and ingest keys: create / name / revoke, each shown as a full ready-to-paste
+  alert URL with a copy button.
 - Send-alert panel — a form generated from the selected event type's `fields`,
   posted to the dashboard route.
 
@@ -213,12 +231,13 @@ result    { id, title: "DONATION", text: "bob donated INR 500.00!",
 
 ## API contract
 
-`POST /api/v1/alerts`, `Authorization: Bearer <api_key>`, JSON body.
+`POST /api/v1/alerts/<ingest_key>`, JSON body. The key may alternatively be sent
+as `Authorization: Bearer <ingest_key>` against `POST /api/v1/alerts`.
 
 | Case | Response |
 |---|---|
 | valid | `200 {ok:true, alertId, delivered:N}` — `delivered:0` means no overlay is connected (the alert is still logged) |
-| missing or invalid bearer key | `401 {error:"invalid api key"}` |
+| missing, malformed, or unknown key | `401 {error:"invalid ingest key"}` |
 | revoked key | `401`, same body — no hint that the key once existed |
 | unknown `type` | `400 {error:"unknown event type", known:[...]}` |
 | missing required field | `400 {error:"field \"amount\" required", type:"donation"}` |
@@ -235,8 +254,11 @@ from a workflow tool's execution log.
 ## Security
 
 - Passwords hashed with argon2id (bcrypt cost 12 acceptable).
-- Rate limit per API key, roughly 60 alerts per minute, as an in-memory token
+- Rate limit per ingest key, roughly 60 alerts per minute, as an in-memory token
   bucket. Same single-instance ceiling as the SSE hub.
+- The ingest key travels in the URL path, so the reverse proxy must be configured
+  not to log that route's URI, and application logs record only the key `prefix`.
+  See "Auth choice for the alert API" above for the full mitigation.
 - The overlay token necessarily appears in a URL, since OBS loads it as a page. It
   is therefore read-only, rotatable, and grants nothing beyond a stream of alerts
   that are already visible on stream.
@@ -252,21 +274,23 @@ from a workflow tool's execution log.
   variable, currency formatting, donor text containing `<script>`), and each skip
   case.
 - SSE hub: subscribe, publish, frame received, disconnect cleans up its entry.
-- Auth: signup, login, session; API key create, authenticate, revoke, then 401.
-- One end-to-end test: `POST /api/v1/alerts` with a real key, asserting an SSE
-  client receives the rendered payload.
+- Auth: signup, login, session; ingest key create, authenticate, revoke, then 401.
+  A key belonging to user A must not resolve to user B's overlay.
+- One end-to-end test: `POST /api/v1/alerts/<key>` with a real key, asserting an
+  SSE client receives the rendered payload. Repeated with the bearer-header form.
 - Vitest, against a Postgres test database (Docker or a `_test` schema).
 
 ## Deployment
 
 Dockerfile; Fly.io or a VPS behind Caddy or nginx. TLS terminates at the proxy,
-which must set `proxy_buffering off` for the SSE route. Prisma migrations run on
-boot. Postgres is managed (Neon, Fly Postgres) or on the same host.
+which must set `proxy_buffering off` for the SSE route and must disable URI
+logging for `/api/v1/alerts/*`. Prisma migrations run on boot. Postgres is managed (Neon, Fly Postgres) or on the same host.
 
 ## Success criteria
 
 1. A new user signs up, copies the overlay URL into an OBS Browser Source, creates
-   an API key, and fires a donation alert with curl — it appears on stream.
+   an ingest key, and fires a donation alert by POSTing to the shown URL with curl
+   — it appears on stream.
 2. Editing the donation template and colors in the dashboard changes the next
    alert, with no overlay reload.
 3. A donor `name` of `<script>alert(1)</script>` renders as literal text.

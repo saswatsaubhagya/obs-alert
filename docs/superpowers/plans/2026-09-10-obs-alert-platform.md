@@ -1,0 +1,3169 @@
+# OBS Alert Platform Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a multi-tenant platform where a streamer fires stream alerts through a URL-keyed HTTP API (or the dashboard) and sees them rendered on an OBS overlay they customized.
+
+**Architecture:** One core function, `sendAlert(userId, payload, source)`, is the only code that validates a payload against its event type schema, renders the template server-side, logs the alert, and publishes it to an in-process SSE hub. Three entrances call it: the public API route (authenticated by an ingest key in the URL path), the dashboard send form (authenticated by session), and test fire. The overlay page holds an `EventSource` to a token-keyed SSE route and displays finished payloads as text nodes — it never interpolates templates or renders markup.
+
+**Tech Stack:** Next.js (App Router, TypeScript, self-hosted long-running Node), Postgres, Prisma, Auth.js v5 Credentials provider, `@node-rs/argon2`, Vitest.
+
+**Spec:** `docs/superpowers/specs/2026-09-10-obs-alert-platform-design.md`
+
+## Global Constraints
+
+- **Self-hosted Node, never serverless.** The overlay depends on a long-lived SSE response; serverless response-duration limits break it.
+- **Single instance.** The SSE hub and the rate limiter are in-process `Map`s. Every module holding such state carries a `ponytail:` comment naming the ceiling and the upgrade path (Redis pub/sub for the hub, a Redis token bucket for the limiter).
+- **`sendAlert` is the only pipeline.** No route, action, or test helper may validate, render, or publish on its own.
+- **Rendered output is data, never markup.** The overlay writes every dynamic value with `textContent`. No `innerHTML`, no `dangerouslySetInnerHTML`, anywhere in the overlay path.
+- **Two independent secrets.** `IngestKey` (write) and `Overlay.token` (read-only stream). Neither derivable from the other. Both rotatable.
+- **Ingest keys and overlay tokens:** 32 random bytes, base64url. Ingest keys are stored as sha256 hashes plus a plaintext `prefix`; plaintext is shown once at creation and never persisted.
+- **Passwords:** argon2id via `@node-rs/argon2`.
+- **Body cap:** 64 KB (65536 bytes) on the alert API.
+- **Rate limit:** 60 alerts per minute per ingest key, token bucket, `429` + `Retry-After` on exceed.
+- **Duration clamp:** 100–30000 ms.
+- **Overlay queue cap:** 50; drop oldest beyond that.
+- **`AlertLog` retention:** 30 days.
+- **Log hygiene:** application logs record an ingest key's `prefix` only — never a full key, never a full request path for `/api/v1/alerts/*`.
+- **Built-in event types:** `donation`, `follow`, `sub`, `raid`. Global rows, no `userId`.
+- **HTTP status contract** (from the spec, exact): `200` delivered; `202` with `skipped` for disabled / below-min; `400` unknown type or missing required field; `401` invalid or revoked key (identical body for both); `413` body too large; `429` rate limited.
+
+---
+
+## File Structure
+
+**Created:**
+
+| File | Responsibility |
+|---|---|
+| `prisma/schema.prisma` | Data model |
+| `prisma/seed.ts` | Seeds the four global `EventType` rows |
+| `src/lib/db.ts` | Prisma client singleton |
+| `src/lib/eventTypes.ts` | Built-in event type field schemas + per-type default `AlertConfig` values. Single source of truth, imported by the seed, the validator, and the dashboard |
+| `src/lib/validate.ts` | `validatePayload` — payload vs. field schema. Pure |
+| `src/lib/render.ts` | `renderTemplate`, `renderAlert` — template interpolation + currency formatting. Pure |
+| `src/lib/keys.ts` | `generateKey`, `hashKey`, `prefixOf`. Pure |
+| `src/lib/ratelimit.ts` | In-process token bucket |
+| `src/lib/hub.ts` | In-process SSE hub: `subscribe`, `publish`, `countFor` |
+| `src/lib/sendAlert.ts` | The core pipeline. Touches DB + hub |
+| `src/lib/auth-user.ts` | `createUser`, `verifyCredentials` — argon2id hashing |
+| `src/auth.ts` | Auth.js v5 config (Credentials + JWT sessions) |
+| `src/app/api/v1/alerts/[key]/route.ts` | Public API, key in path |
+| `src/app/api/v1/alerts/route.ts` | Public API, key in `Authorization: Bearer` |
+| `src/lib/apiAlert.ts` | Shared handler body for the two routes above (auth, body cap, rate limit, then `sendAlert`) |
+| `src/app/api/overlay/[token]/events/route.ts` | SSE stream for one overlay |
+| `src/app/overlay/[token]/page.tsx` | Overlay page shell (server) |
+| `src/app/overlay/[token]/OverlayClient.tsx` | Overlay runtime: EventSource, serial queue, animation, sound |
+| `src/app/(auth)/signup/page.tsx`, `src/app/(auth)/login/page.tsx` | Auth pages |
+| `src/app/(auth)/actions.ts` | Signup server action |
+| `src/app/dashboard/page.tsx` | Event type list + editor + preview + test fire + send form |
+| `src/app/dashboard/Editor.tsx` | Editor client component with preview iframe |
+| `src/app/dashboard/actions.ts` | Server actions: save config, test fire, manual send |
+| `src/app/dashboard/settings/page.tsx` | Overlay URL, token rotation, ingest keys |
+| `src/app/dashboard/settings/actions.ts` | Server actions: rotate token, create/revoke key |
+| `src/instrumentation.ts` | Starts the `AlertLog` retention timer on boot |
+| `src/lib/retention.ts` | `pruneAlertLogs` |
+| `docker-compose.yml` | Postgres for dev + test |
+| `Dockerfile` | Production image |
+| `deploy/nginx.conf` | Reference proxy config: SSE buffering off, URI logging off for the alert route |
+| `tests/helpers/db.ts` | Truncate + fixture helpers for DB-touching tests |
+
+**Modified / removed:** `server.js`, `overlay.html`, `test.js` are the existing zero-dependency prototype. Their logic ports into `hub.ts`, `validate.ts`, `OverlayClient.tsx`, and the Vitest suite; the files are deleted in Task 14 once their behavior is covered. `README.md` is rewritten in Task 14.
+
+---
+
+## Task 1: Project scaffold, database, and test harness
+
+**Files:**
+- Create: `package.json`, `tsconfig.json`, `next.config.ts`, `vitest.config.ts`, `docker-compose.yml`, `.env.example`, `.gitignore`, `src/lib/db.ts`, `src/app/layout.tsx`, `src/app/api/health/route.ts`
+- Test: `tests/health.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `prisma` (default export of `src/lib/db.ts`) — the `PrismaClient` singleton every DB-touching module imports. `npm test` runs Vitest. `npm run db:push` syncs the schema.
+
+- [ ] **Step 1: Scaffold the app and install dependencies**
+
+```bash
+cd "/Users/saswattech9/Desktop/obs alert"
+npx --yes create-next-app@latest . --ts --app --src-dir --eslint --no-tailwind --import-alias "@/*" --use-npm --yes
+npm i prisma @prisma/client next-auth@beta @node-rs/argon2
+npm i -D vitest @vitejs/plugin-react tsx @types/node
+npx prisma init --datasource-provider postgresql
+```
+
+`create-next-app` refuses to overwrite `README.md` — if it errors on the existing files, move them aside first (`mkdir -p .legacy && mv server.js overlay.html test.js README.md .legacy/`) and continue. They are deleted in Task 14 either way.
+
+- [ ] **Step 2: Add Postgres for dev and test**
+
+`docker-compose.yml`:
+
+```yaml
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: obsalert
+    ports: ["5433:5432"]
+```
+
+`.env.example` (copy to `.env`, which `.gitignore` must already cover):
+
+```
+DATABASE_URL="postgresql://postgres:dev@localhost:5433/obsalert"
+AUTH_SECRET="generate with: openssl rand -base64 32"
+PUBLIC_URL="http://localhost:3000"
+```
+
+Run: `docker compose up -d`
+
+- [ ] **Step 3: Write the Prisma client singleton**
+
+`src/lib/db.ts`:
+
+```ts
+// ponytail: module-global client, the standard Next.js pattern — dev hot reload
+// would otherwise open a new pool per reload.
+import { PrismaClient } from '@prisma/client';
+
+const g = globalThis as unknown as { prisma?: PrismaClient };
+const prisma = g.prisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== 'production') g.prisma = prisma;
+
+export default prisma;
+```
+
+- [ ] **Step 4: Configure Vitest**
+
+`vitest.config.ts`:
+
+```ts
+import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+
+export default defineConfig({
+  test: {
+    environment: 'node',
+    // ponytail: single fork — DB-touching tests truncate shared tables, so they
+    // must not run concurrently. Split into projects if the suite gets slow.
+    pool: 'forks',
+    poolOptions: { forks: { singleFork: true } },
+    setupFiles: ['tests/helpers/env.ts'],
+  },
+  resolve: { alias: { '@': path.resolve(__dirname, 'src') } },
+});
+```
+
+`tests/helpers/env.ts`:
+
+```ts
+process.env.AUTH_SECRET ??= 'test-secret';
+process.env.PUBLIC_URL ??= 'http://localhost:3000';
+```
+
+Add to `package.json` scripts:
+
+```json
+"test": "vitest run",
+"db:push": "prisma db push",
+"db:seed": "tsx prisma/seed.ts"
+```
+
+- [ ] **Step 5: Write the failing health test**
+
+`tests/health.test.ts`:
+
+```ts
+import { expect, test } from 'vitest';
+import { GET } from '@/app/api/health/route';
+
+test('health route reports ok', async () => {
+  const res = await GET();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ ok: true });
+});
+```
+
+- [ ] **Step 6: Run it to make sure it fails**
+
+Run: `npm test -- tests/health.test.ts`
+Expected: FAIL — cannot resolve `@/app/api/health/route`.
+
+- [ ] **Step 7: Implement the health route**
+
+`src/app/api/health/route.ts`:
+
+```ts
+export async function GET() {
+  return Response.json({ ok: true });
+}
+```
+
+- [ ] **Step 8: Run the test and make sure it passes**
+
+Run: `npm test -- tests/health.test.ts`
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "chore: scaffold Next.js app, Postgres, and Vitest harness"
+```
+
+---
+
+## Task 2: Data model and event type seed
+
+**Files:**
+- Create: `prisma/seed.ts`, `src/lib/eventTypes.ts`, `tests/helpers/db.ts`
+- Modify: `prisma/schema.prisma`
+- Test: `tests/eventTypes.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma` from Task 1.
+- Produces:
+  - `type FieldType = 'string' | 'number'`
+  - `type Field = { name: string; type: FieldType; required: boolean }`
+  - `BUILT_IN: Record<string, { label: string; fields: Field[]; defaults: ConfigDefaults }>` keyed by `'donation' | 'follow' | 'sub' | 'raid'`
+  - `type ConfigDefaults = { template: string; titleTemplate: string; style: Style; durationMs: number }`
+  - `type Style = { accent: string; bg: string; fg: string; font: string; size: number; pos: string; width: number; radius: number; anim: 'fade' | 'slide' | 'pop' }`
+  - `tests/helpers/db.ts` exports `resetDb()` and `makeUser(email?)` returning `{ user, overlay }`.
+
+- [ ] **Step 1: Write the schema**
+
+`prisma/schema.prisma` — replace the model section with:
+
+```prisma
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  createdAt    DateTime      @default(now())
+  overlays     Overlay[]
+  ingestKeys   IngestKey[]
+  alertConfigs AlertConfig[]
+  alertLogs    AlertLog[]
+}
+
+model Overlay {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  name      String   @default("Main")
+  createdAt DateTime @default(now())
+}
+
+model IngestKey {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  hash       String    @unique
+  prefix     String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+}
+
+model EventType {
+  key    String @id
+  label  String
+  fields Json
+}
+
+model AlertConfig {
+  id            String  @id @default(cuid())
+  userId        String
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventTypeKey  String
+  enabled       Boolean @default(true)
+  template      String
+  titleTemplate String?
+  style         Json
+  durationMs    Int     @default(5000)
+  imageUrl      String?
+  soundUrl      String?
+  soundVolume   Int     @default(80)
+  minAmount     Int?
+  locale        String  @default("en-US")
+
+  @@unique([userId, eventTypeKey])
+}
+
+model AlertLog {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventTypeKey String
+  payload      Json
+  renderedText String
+  source       String
+  deliveredTo  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+```
+
+Auth.js uses the JWT session strategy here, so no `Session`/`Account` tables are needed.
+
+- [ ] **Step 2: Push the schema**
+
+Run: `npm run db:push`
+Expected: "Your database is now in sync with your Prisma schema."
+
+- [ ] **Step 3: Write the failing event types test**
+
+`tests/eventTypes.test.ts`:
+
+```ts
+import { expect, test } from 'vitest';
+import { BUILT_IN } from '@/lib/eventTypes';
+
+test('every built-in type declares fields and defaults', () => {
+  expect(Object.keys(BUILT_IN).sort()).toEqual(['donation', 'follow', 'raid', 'sub']);
+  for (const [key, t] of Object.entries(BUILT_IN)) {
+    expect(t.label, key).toBeTruthy();
+    expect(t.fields.length, key).toBeGreaterThan(0);
+    expect(t.defaults.template, key).toBeTruthy();
+    expect(t.defaults.durationMs, key).toBeGreaterThanOrEqual(100);
+  }
+});
+
+test('every default template only references declared fields', () => {
+  for (const [key, t] of Object.entries(BUILT_IN)) {
+    const declared = new Set(t.fields.map((f) => f.name));
+    const used = [...t.defaults.template.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+    for (const v of used) expect(declared.has(v), `${key} uses {${v}}`).toBe(true);
+  }
+});
+
+test('donation declares a required numeric amount', () => {
+  const amount = BUILT_IN.donation.fields.find((f) => f.name === 'amount');
+  expect(amount).toEqual({ name: 'amount', type: 'number', required: true });
+});
+```
+
+- [ ] **Step 4: Run it to make sure it fails**
+
+Run: `npm test -- tests/eventTypes.test.ts`
+Expected: FAIL — cannot resolve `@/lib/eventTypes`.
+
+- [ ] **Step 5: Implement the event type definitions**
+
+`src/lib/eventTypes.ts`:
+
+```ts
+export type FieldType = 'string' | 'number';
+export type Field = { name: string; type: FieldType; required: boolean };
+
+export type Style = {
+  accent: string;
+  bg: string;
+  fg: string;
+  font: string;
+  size: number;
+  pos: string;
+  width: number;
+  radius: number;
+  anim: 'fade' | 'slide' | 'pop';
+};
+
+export type ConfigDefaults = {
+  template: string;
+  titleTemplate: string;
+  style: Style;
+  durationMs: number;
+};
+
+export const BASE_STYLE: Style = {
+  accent: '#7c5cff',
+  bg: 'rgba(12,12,16,0.86)',
+  fg: '#ffffff',
+  font: 'system-ui, sans-serif',
+  size: 34,
+  pos: 'top',
+  width: 640,
+  radius: 16,
+  anim: 'fade',
+};
+
+const s = (name: string, required = false): Field => ({ name, type: 'string', required });
+const n = (name: string, required = false): Field => ({ name, type: 'number', required });
+
+export const BUILT_IN: Record<string, { label: string; fields: Field[]; defaults: ConfigDefaults }> = {
+  donation: {
+    label: 'Donation',
+    fields: [s('name', true), n('amount', true), s('currency'), s('message')],
+    defaults: {
+      template: '{name} donated {amount}!',
+      titleTemplate: 'DONATION',
+      style: { ...BASE_STYLE, accent: '#31d0aa' },
+      durationMs: 6000,
+    },
+  },
+  follow: {
+    label: 'Follow',
+    fields: [s('name', true), s('message')],
+    defaults: {
+      template: '{name} just followed!',
+      titleTemplate: 'NEW FOLLOWER',
+      style: { ...BASE_STYLE, accent: '#7c5cff' },
+      durationMs: 4000,
+    },
+  },
+  sub: {
+    label: 'Subscription',
+    fields: [s('name', true), n('months'), s('tier'), s('message')],
+    defaults: {
+      template: '{name} subscribed!',
+      titleTemplate: 'SUBSCRIBER',
+      style: { ...BASE_STYLE, accent: '#ffb020' },
+      durationMs: 5000,
+    },
+  },
+  raid: {
+    label: 'Raid',
+    fields: [s('name', true), n('viewers'), s('message')],
+    defaults: {
+      template: '{name} raided with {viewers} viewers!',
+      titleTemplate: 'RAID',
+      style: { ...BASE_STYLE, accent: '#ff5c8a' },
+      durationMs: 5000,
+    },
+  },
+};
+
+export const EVENT_TYPE_KEYS = Object.keys(BUILT_IN);
+```
+
+- [ ] **Step 6: Run the test and make sure it passes**
+
+Run: `npm test -- tests/eventTypes.test.ts`
+Expected: PASS (3 tests).
+
+- [ ] **Step 7: Write the seed**
+
+`prisma/seed.ts`:
+
+```ts
+import { PrismaClient } from '@prisma/client';
+import { BUILT_IN } from '../src/lib/eventTypes';
+
+const prisma = new PrismaClient();
+
+async function main() {
+  for (const [key, t] of Object.entries(BUILT_IN)) {
+    await prisma.eventType.upsert({
+      where: { key },
+      update: { label: t.label, fields: t.fields },
+      create: { key, label: t.label, fields: t.fields },
+    });
+  }
+  console.log(`seeded ${Object.keys(BUILT_IN).length} event types`);
+}
+
+main().finally(() => prisma.$disconnect());
+```
+
+Run: `npm run db:seed`
+Expected: `seeded 4 event types`.
+
+- [ ] **Step 8: Write the test DB helpers**
+
+`tests/helpers/db.ts`:
+
+```ts
+import { randomBytes } from 'node:crypto';
+import prisma from '@/lib/db';
+
+export async function resetDb() {
+  // order matters: children before parents
+  await prisma.alertLog.deleteMany();
+  await prisma.alertConfig.deleteMany();
+  await prisma.ingestKey.deleteMany();
+  await prisma.overlay.deleteMany();
+  await prisma.user.deleteMany();
+}
+
+export async function makeUser(email = `u${randomBytes(4).toString('hex')}@test.dev`) {
+  const user = await prisma.user.create({ data: { email, passwordHash: 'x' } });
+  const overlay = await prisma.overlay.create({
+    data: { userId: user.id, token: randomBytes(32).toString('base64url') },
+  });
+  return { user, overlay };
+}
+```
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add Prisma data model, event type definitions, and seed"
+```
+
+---
+
+## Task 3: Payload validation
+
+**Files:**
+- Create: `src/lib/validate.ts`
+- Test: `tests/validate.test.ts`
+
+**Interfaces:**
+- Consumes: `Field` from `@/lib/eventTypes`.
+- Produces: `validatePayload(fields: Field[], body: unknown): { ok: true; values: Record<string, string | number> } | { ok: false; error: string }`. Unknown keys are dropped. Numbers accept numeric strings.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/validate.test.ts`:
+
+```ts
+import { expect, test } from 'vitest';
+import { validatePayload } from '@/lib/validate';
+import { BUILT_IN } from '@/lib/eventTypes';
+
+const donation = BUILT_IN.donation.fields;
+
+test('rejects non-objects', () => {
+  for (const bad of [null, undefined, 'x', 42, [{ name: 'a' }]]) {
+    expect(validatePayload(donation, bad).ok).toBe(false);
+  }
+});
+
+test('accepts a valid payload and drops unknown keys', () => {
+  const r = validatePayload(donation, { name: 'bob', amount: 500, currency: 'INR', evil: 'x' });
+  expect(r).toEqual({ ok: true, values: { name: 'bob', amount: 500, currency: 'INR' } });
+});
+
+test('names the first missing required field', () => {
+  const r = validatePayload(donation, { name: 'bob' });
+  expect(r).toEqual({ ok: false, error: 'field "amount" required' });
+});
+
+test('treats blank and whitespace-only strings as missing', () => {
+  expect(validatePayload(donation, { name: '   ', amount: 1 })).toEqual({
+    ok: false,
+    error: 'field "name" required',
+  });
+});
+
+test('trims string values', () => {
+  const r = validatePayload(donation, { name: '  bob  ', amount: 1 });
+  expect(r.ok && r.values.name).toBe('bob');
+});
+
+test('coerces numeric strings, rejects non-numeric ones', () => {
+  expect(validatePayload(donation, { name: 'bob', amount: '500' })).toEqual({
+    ok: true,
+    values: { name: 'bob', amount: 500 },
+  });
+  expect(validatePayload(donation, { name: 'bob', amount: 'lots' })).toEqual({
+    ok: false,
+    error: 'field "amount" must be a number',
+  });
+  expect(validatePayload(donation, { name: 'bob', amount: Infinity }).ok).toBe(false);
+});
+
+test('omits absent optional fields rather than defaulting them', () => {
+  const r = validatePayload(donation, { name: 'bob', amount: 1 });
+  expect(r.ok && 'message' in r.values).toBe(false);
+});
+
+test('keeps donor text verbatim — escaping is the renderer and overlay job', () => {
+  const r = validatePayload(donation, { name: '<script>alert(1)</script>', amount: 1 });
+  expect(r.ok && r.values.name).toBe('<script>alert(1)</script>');
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/validate.test.ts`
+Expected: FAIL — cannot resolve `@/lib/validate`.
+
+- [ ] **Step 3: Implement the validator**
+
+`src/lib/validate.ts`:
+
+```ts
+import type { Field } from './eventTypes';
+
+export type Values = Record<string, string | number>;
+export type ValidateResult = { ok: true; values: Values } | { ok: false; error: string };
+
+export function validatePayload(fields: Field[], body: unknown): ValidateResult {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'body must be a JSON object' };
+  }
+  const raw = body as Record<string, unknown>;
+  const values: Values = {};
+
+  for (const f of fields) {
+    const v = raw[f.name];
+    const absent = v === undefined || v === null || (typeof v === 'string' && !v.trim());
+    if (absent) {
+      if (f.required) return { ok: false, error: `field "${f.name}" required` };
+      continue;
+    }
+    if (f.type === 'number') {
+      const num = typeof v === 'number' ? v : Number(String(v).trim());
+      if (!Number.isFinite(num)) return { ok: false, error: `field "${f.name}" must be a number` };
+      values[f.name] = num;
+    } else {
+      if (typeof v === 'object') return { ok: false, error: `field "${f.name}" must be a string` };
+      values[f.name] = String(v).trim();
+    }
+  }
+  return { ok: true, values }; // unknown keys dropped
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/validate.test.ts`
+Expected: PASS (8 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: validate alert payloads against event type field schemas"
+```
+
+---
+
+## Task 4: Template rendering
+
+**Files:**
+- Create: `src/lib/render.ts`
+- Test: `tests/render.test.ts`
+
+**Interfaces:**
+- Consumes: `Values` from `@/lib/validate`, `Style` from `@/lib/eventTypes`.
+- Produces:
+  - `renderTemplate(template: string, values: Values, locale: string): string`
+  - `type AlertPayload = { id: string; eventType: string; title: string; text: string; message: string; style: Style; durationMs: number; imageUrl: string | null; soundUrl: string | null; soundVolume: number }`
+  - `renderAlert(input: { eventTypeKey: string; values: Values; config: RenderConfig }): AlertPayload` where `RenderConfig = { template: string; titleTemplate: string | null; style: Style; durationMs: number; imageUrl: string | null; soundUrl: string | null; soundVolume: number; locale: string }`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/render.test.ts`:
+
+```ts
+import { expect, test } from 'vitest';
+import { renderAlert, renderTemplate } from '@/lib/render';
+import { BASE_STYLE } from '@/lib/eventTypes';
+
+const cfg = {
+  template: '{name} donated {amount}!',
+  titleTemplate: 'DONATION',
+  style: BASE_STYLE,
+  durationMs: 6000,
+  imageUrl: null,
+  soundUrl: null,
+  soundVolume: 80,
+  locale: 'en-US',
+};
+
+test('substitutes declared variables', () => {
+  expect(renderTemplate('{name} says hi', { name: 'bob' }, 'en-US')).toBe('bob says hi');
+});
+
+test('an unknown variable renders as empty string', () => {
+  expect(renderTemplate('{name}{nope}!', { name: 'bob' }, 'en-US')).toBe('bob!');
+});
+
+test('formats amount as currency when a currency code is present', () => {
+  const out = renderTemplate('{amount}', { amount: 500, currency: 'USD' }, 'en-US');
+  expect(out).toBe('$500.00');
+});
+
+test('renders a bare number when no currency is given', () => {
+  expect(renderTemplate('{amount}', { amount: 500 }, 'en-US')).toBe('500');
+});
+
+test('falls back to a bare number on an invalid currency code', () => {
+  expect(renderTemplate('{amount}', { amount: 500, currency: 'NOPE' }, 'en-US')).toBe('500');
+});
+
+test('non-amount numbers are not currency formatted', () => {
+  expect(renderTemplate('{viewers}', { viewers: 1200, currency: 'USD' }, 'en-US')).toBe('1,200');
+});
+
+test('does not re-substitute injected braces from donor text', () => {
+  const out = renderTemplate('{name} donated', { name: '{amount}', amount: 999 }, 'en-US');
+  expect(out).toBe('{amount} donated');
+});
+
+test('renders a full alert payload', () => {
+  const a = renderAlert({
+    eventTypeKey: 'donation',
+    values: { name: 'bob', amount: 500, currency: 'INR', message: 'gg' },
+    config: cfg,
+  });
+  expect(a.title).toBe('DONATION');
+  expect(a.text).toContain('bob donated');
+  expect(a.message).toBe('gg');
+  expect(a.durationMs).toBe(6000);
+  expect(a.id).toMatch(/[0-9a-f-]{36}/);
+});
+
+test('message travels as its own field, never interpolated into text', () => {
+  const a = renderAlert({
+    eventTypeKey: 'donation',
+    values: { name: 'bob', amount: 1, message: '<script>alert(1)</script>' },
+    config: cfg,
+  });
+  expect(a.text).not.toContain('<script>');
+  expect(a.message).toBe('<script>alert(1)</script>');
+});
+
+test('clamps duration into 100..30000', () => {
+  const lo = renderAlert({ eventTypeKey: 'follow', values: { name: 'b' }, config: { ...cfg, durationMs: 1 } });
+  const hi = renderAlert({ eventTypeKey: 'follow', values: { name: 'b' }, config: { ...cfg, durationMs: 999999 } });
+  expect(lo.durationMs).toBe(100);
+  expect(hi.durationMs).toBe(30000);
+});
+
+test('a null title template yields an empty title', () => {
+  const a = renderAlert({ eventTypeKey: 'follow', values: { name: 'b' }, config: { ...cfg, titleTemplate: null } });
+  expect(a.title).toBe('');
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/render.test.ts`
+Expected: FAIL — cannot resolve `@/lib/render`.
+
+- [ ] **Step 3: Implement the renderer**
+
+`src/lib/render.ts`:
+
+```ts
+import { randomUUID } from 'node:crypto';
+import type { Style } from './eventTypes';
+import type { Values } from './validate';
+
+export type RenderConfig = {
+  template: string;
+  titleTemplate: string | null;
+  style: Style;
+  durationMs: number;
+  imageUrl: string | null;
+  soundUrl: string | null;
+  soundVolume: number;
+  locale: string;
+};
+
+export type AlertPayload = {
+  id: string;
+  eventType: string;
+  title: string;
+  text: string;
+  message: string;
+  style: Style;
+  durationMs: number;
+  imageUrl: string | null;
+  soundUrl: string | null;
+  soundVolume: number;
+};
+
+function formatValue(name: string, value: string | number, values: Values, locale: string): string {
+  if (typeof value !== 'number') return value;
+  const currency = typeof values.currency === 'string' ? values.currency : undefined;
+  if (name === 'amount' && currency) {
+    try {
+      return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value);
+    } catch {
+      return new Intl.NumberFormat(locale).format(value); // unknown currency code
+    }
+  }
+  return new Intl.NumberFormat(locale).format(value);
+}
+
+/** Single pass find-and-replace over a flat map: no expressions, no nesting, and
+ *  substituted values are never rescanned, so donor text containing "{amount}"
+ *  cannot pull in another field. */
+export function renderTemplate(template: string, values: Values, locale: string): string {
+  return template.replace(/\{(\w+)\}/g, (_m, name: string) => {
+    const v = values[name];
+    return v === undefined ? '' : formatValue(name, v, values, locale);
+  });
+}
+
+export function renderAlert(input: {
+  eventTypeKey: string;
+  values: Values;
+  config: RenderConfig;
+}): AlertPayload {
+  const { eventTypeKey, values, config } = input;
+  const message = typeof values.message === 'string' ? values.message : '';
+  return {
+    id: randomUUID(),
+    eventType: eventTypeKey,
+    title: config.titleTemplate ? renderTemplate(config.titleTemplate, values, config.locale) : '',
+    text: renderTemplate(config.template, values, config.locale),
+    message,
+    style: config.style,
+    durationMs: Math.min(30000, Math.max(100, Math.round(config.durationMs))),
+    imageUrl: config.imageUrl,
+    soundUrl: config.soundUrl,
+    soundVolume: config.soundVolume,
+  };
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/render.test.ts`
+Expected: PASS (11 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: render alert templates server-side with currency formatting"
+```
+
+---
+
+## Task 5: SSE hub
+
+**Files:**
+- Create: `src/lib/hub.ts`
+- Test: `tests/hub.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `subscribe(userId: string, send: (frame: string) => void): () => void` — returns an unsubscribe function.
+  - `publish(userId: string, data: unknown): number` — returns how many subscribers received it.
+  - `countFor(userId: string): number`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/hub.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import { countFor, publish, subscribe, __reset } from '@/lib/hub';
+
+beforeEach(() => __reset());
+
+test('publish reaches every subscriber of that user and nobody else', () => {
+  const a: string[] = [];
+  const b: string[] = [];
+  const c: string[] = [];
+  subscribe('u1', (f) => a.push(f));
+  subscribe('u1', (f) => b.push(f));
+  subscribe('u2', (f) => c.push(f));
+
+  expect(publish('u1', { text: 'hi' })).toBe(2);
+  expect(a).toHaveLength(1);
+  expect(b).toHaveLength(1);
+  expect(c).toHaveLength(0);
+});
+
+test('frames are well-formed SSE carrying JSON', () => {
+  const got: string[] = [];
+  subscribe('u1', (f) => got.push(f));
+  publish('u1', { text: 'bob followed' });
+  expect(got[0]).toMatch(/^data: \{.*\}\n\n$/s);
+  expect(JSON.parse(got[0].slice(6))).toEqual({ text: 'bob followed' });
+});
+
+test('publishing to a user with no subscribers returns 0', () => {
+  expect(publish('nobody', { text: 'x' })).toBe(0);
+});
+
+test('unsubscribe removes the subscriber and cleans up the user entry', () => {
+  const off = subscribe('u1', () => {});
+  expect(countFor('u1')).toBe(1);
+  off();
+  expect(countFor('u1')).toBe(0);
+  expect(publish('u1', { text: 'x' })).toBe(0);
+});
+
+test('a throwing subscriber is dropped and does not block the others', () => {
+  const ok: string[] = [];
+  subscribe('u1', () => {
+    throw new Error('closed socket');
+  });
+  subscribe('u1', (f) => ok.push(f));
+
+  expect(publish('u1', { text: 'x' })).toBe(1);
+  expect(ok).toHaveLength(1);
+  expect(countFor('u1')).toBe(1);
+});
+
+test('unsubscribing twice is harmless', () => {
+  const off = subscribe('u1', () => {});
+  off();
+  off();
+  expect(countFor('u1')).toBe(0);
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/hub.test.ts`
+Expected: FAIL — cannot resolve `@/lib/hub`.
+
+- [ ] **Step 3: Implement the hub**
+
+`src/lib/hub.ts`:
+
+```ts
+// ponytail: in-process fan-out, so alerts only reach overlays connected to THIS
+// instance. Ceiling: one Node process. Upgrade path: publish to Redis pub/sub and
+// have each instance relay to its own local subscriber set.
+type Send = (frame: string) => void;
+
+const g = globalThis as unknown as { __alertHub?: Map<string, Set<Send>> };
+const rooms: Map<string, Set<Send>> = (g.__alertHub ??= new Map());
+
+export function subscribe(userId: string, send: Send): () => void {
+  let set = rooms.get(userId);
+  if (!set) rooms.set(userId, (set = new Set()));
+  set.add(send);
+  return () => {
+    const s = rooms.get(userId);
+    if (!s) return;
+    s.delete(send);
+    if (s.size === 0) rooms.delete(userId);
+  };
+}
+
+export function publish(userId: string, data: unknown): number {
+  const set = rooms.get(userId);
+  if (!set || set.size === 0) return 0;
+  const frame = `data: ${JSON.stringify(data)}\n\n`;
+  let delivered = 0;
+  for (const send of [...set]) {
+    try {
+      send(frame);
+      delivered++;
+    } catch {
+      set.delete(send); // dead connection; the route's cleanup may not have run yet
+    }
+  }
+  if (set.size === 0) rooms.delete(userId);
+  return delivered;
+}
+
+export function countFor(userId: string): number {
+  return rooms.get(userId)?.size ?? 0;
+}
+
+/** Test-only. */
+export function __reset() {
+  rooms.clear();
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/hub.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add in-process SSE hub for per-user alert fan-out"
+```
+
+---
+
+## Task 6: The sendAlert core
+
+**Files:**
+- Create: `src/lib/sendAlert.ts`
+- Test: `tests/sendAlert.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma`, `BUILT_IN`, `validatePayload`, `renderAlert`, `publish`, and `resetDb`/`makeUser` from `tests/helpers/db.ts`.
+- Produces: `sendAlert(userId: string, body: unknown, source: 'api' | 'dashboard' | 'test'): Promise<SendResult>` where
+
+```ts
+type SendResult =
+  | { status: 200; body: { ok: true; alertId: string; delivered: number } }
+  | { status: 202; body: { ok: true; delivered: 0; skipped: 'disabled' | 'below_min_amount' } }
+  | { status: 400; body: { error: string; type?: string; known?: string[] } };
+```
+
+Also produces `effectiveConfig(userId, eventTypeKey)` for the dashboard to read defaults.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/sendAlert.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { sendAlert } from '@/lib/sendAlert';
+import { __reset, subscribe } from '@/lib/hub';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(async () => {
+  __reset();
+  await resetDb();
+});
+
+const donation = { type: 'donation', name: 'bob', amount: 500, currency: 'USD', message: 'gg' };
+
+test('rejects an unknown event type and lists the known ones', async () => {
+  const { user } = await makeUser();
+  const r = await sendAlert(user.id, { type: 'nope', name: 'x' }, 'api');
+  expect(r.status).toBe(400);
+  expect(r.body).toMatchObject({ error: 'unknown event type' });
+  expect((r.body as { known: string[] }).known).toContain('donation');
+});
+
+test('rejects a missing required field and names the type', async () => {
+  const { user } = await makeUser();
+  const r = await sendAlert(user.id, { type: 'donation', name: 'bob' }, 'api');
+  expect(r.status).toBe(400);
+  expect(r.body).toEqual({ error: 'field "amount" required', type: 'donation' });
+});
+
+test('rejects a missing type', async () => {
+  const { user } = await makeUser();
+  expect((await sendAlert(user.id, { name: 'bob' }, 'api')).status).toBe(400);
+});
+
+test('delivers to a connected overlay and reports the count', async () => {
+  const { user } = await makeUser();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  const r = await sendAlert(user.id, donation, 'api');
+  expect(r.status).toBe(200);
+  expect(r.body).toMatchObject({ ok: true, delivered: 1 });
+
+  const payload = JSON.parse(frames[0].slice(6));
+  expect(payload.text).toBe('bob donated $500.00!');
+  expect(payload.title).toBe('DONATION');
+  expect(payload.message).toBe('gg');
+});
+
+test('works with no config row, using built-in defaults', async () => {
+  const { user } = await makeUser();
+  expect(await prisma.alertConfig.count({ where: { userId: user.id } })).toBe(0);
+  expect((await sendAlert(user.id, donation, 'api')).status).toBe(200);
+});
+
+test('succeeds with delivered 0 when no overlay is connected, and still logs', async () => {
+  const { user } = await makeUser();
+  const r = await sendAlert(user.id, donation, 'api');
+  expect(r.status).toBe(200);
+  expect(r.body).toMatchObject({ delivered: 0 });
+  const log = await prisma.alertLog.findFirst({ where: { userId: user.id } });
+  expect(log?.renderedText).toBe('bob donated $500.00!');
+  expect(log?.deliveredTo).toBe(0);
+  expect(log?.source).toBe('api');
+});
+
+test('a disabled type returns 202 skipped and publishes nothing', async () => {
+  const { user } = await makeUser();
+  await prisma.alertConfig.create({
+    data: { userId: user.id, eventTypeKey: 'donation', enabled: false, template: '{name}', style: {} },
+  });
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  const r = await sendAlert(user.id, donation, 'api');
+  expect(r).toEqual({ status: 202, body: { ok: true, delivered: 0, skipped: 'disabled' } });
+  expect(frames).toHaveLength(0);
+});
+
+test('a donation below minAmount returns 202 skipped', async () => {
+  const { user } = await makeUser();
+  await prisma.alertConfig.create({
+    data: { userId: user.id, eventTypeKey: 'donation', template: '{name}', style: {}, minAmount: 1000 },
+  });
+  const r = await sendAlert(user.id, { ...donation, amount: 500 }, 'api');
+  expect(r).toEqual({ status: 202, body: { ok: true, delivered: 0, skipped: 'below_min_amount' } });
+
+  const at = await sendAlert(user.id, { ...donation, amount: 1000 }, 'api');
+  expect(at.status).toBe(200);
+});
+
+test('minAmount does not affect types without an amount field', async () => {
+  const { user } = await makeUser();
+  await prisma.alertConfig.create({
+    data: { userId: user.id, eventTypeKey: 'follow', template: '{name}', style: {}, minAmount: 1000 },
+  });
+  expect((await sendAlert(user.id, { type: 'follow', name: 'bob' }, 'api')).status).toBe(200);
+});
+
+test("one user's alert never reaches another user's overlay", async () => {
+  const a = await makeUser();
+  const b = await makeUser();
+  const bFrames: string[] = [];
+  subscribe(b.user.id, (f) => bFrames.push(f));
+
+  await sendAlert(a.user.id, donation, 'api');
+  expect(bFrames).toHaveLength(0);
+});
+
+test('a users own custom template and style are applied', async () => {
+  const { user } = await makeUser();
+  await prisma.alertConfig.create({
+    data: {
+      userId: user.id,
+      eventTypeKey: 'donation',
+      template: 'BIG UP {name} ({amount})',
+      titleTemplate: 'TIP',
+      style: { accent: '#ff0000' },
+      durationMs: 9000,
+    },
+  });
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+  await sendAlert(user.id, donation, 'api');
+
+  const p = JSON.parse(frames[0].slice(6));
+  expect(p.text).toBe('BIG UP bob ($500.00)');
+  expect(p.title).toBe('TIP');
+  expect(p.style.accent).toBe('#ff0000');
+  expect(p.durationMs).toBe(9000);
+});
+
+test('records the source on the log row', async () => {
+  const { user } = await makeUser();
+  await sendAlert(user.id, donation, 'test');
+  const log = await prisma.alertLog.findFirst({ where: { userId: user.id } });
+  expect(log?.source).toBe('test');
+});
+
+test('donor markup survives as literal text in the rendered output', async () => {
+  const { user } = await makeUser();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+  await sendAlert(user.id, { ...donation, name: '<img src=x onerror=alert(1)>' }, 'api');
+  const p = JSON.parse(frames[0].slice(6));
+  expect(p.text).toContain('<img src=x onerror=alert(1)>');
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/sendAlert.test.ts`
+Expected: FAIL — cannot resolve `@/lib/sendAlert`.
+
+- [ ] **Step 3: Implement the core**
+
+`src/lib/sendAlert.ts`:
+
+```ts
+import prisma from './db';
+import { BASE_STYLE, BUILT_IN, EVENT_TYPE_KEYS, type Style } from './eventTypes';
+import { publish } from './hub';
+import { renderAlert, type RenderConfig } from './render';
+import { validatePayload } from './validate';
+
+export type Source = 'api' | 'dashboard' | 'test';
+
+export type SendResult =
+  | { status: 200; body: { ok: true; alertId: string; delivered: number } }
+  | { status: 202; body: { ok: true; delivered: 0; skipped: 'disabled' | 'below_min_amount' } }
+  | { status: 400; body: { error: string; type?: string; known?: string[] } };
+
+/** The user's saved config for a type, or the built-in defaults when unsaved. */
+export async function effectiveConfig(userId: string, eventTypeKey: string) {
+  const t = BUILT_IN[eventTypeKey];
+  const row = await prisma.alertConfig.findUnique({
+    where: { userId_eventTypeKey: { userId, eventTypeKey } },
+  });
+  const style = { ...BASE_STYLE, ...t.defaults.style, ...((row?.style as Partial<Style>) ?? {}) };
+  return {
+    enabled: row?.enabled ?? true,
+    minAmount: row?.minAmount ?? null,
+    render: {
+      template: row?.template ?? t.defaults.template,
+      titleTemplate: row ? row.titleTemplate : t.defaults.titleTemplate,
+      style,
+      durationMs: row?.durationMs ?? t.defaults.durationMs,
+      imageUrl: row?.imageUrl ?? null,
+      soundUrl: row?.soundUrl ?? null,
+      soundVolume: row?.soundVolume ?? 80,
+      locale: row?.locale ?? 'en-US',
+    } satisfies RenderConfig,
+  };
+}
+
+export async function sendAlert(userId: string, body: unknown, source: Source): Promise<SendResult> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { status: 400, body: { error: 'body must be a JSON object' } };
+  }
+  const { type, ...rest } = body as Record<string, unknown>;
+  const key = typeof type === 'string' ? type : '';
+  if (!BUILT_IN[key]) {
+    return { status: 400, body: { error: 'unknown event type', known: EVENT_TYPE_KEYS } };
+  }
+
+  const parsed = validatePayload(BUILT_IN[key].fields, rest);
+  if (!parsed.ok) return { status: 400, body: { error: parsed.error, type: key } };
+
+  const config = await effectiveConfig(userId, key);
+  if (!config.enabled) {
+    return { status: 202, body: { ok: true, delivered: 0, skipped: 'disabled' } };
+  }
+  if (
+    config.minAmount !== null &&
+    typeof parsed.values.amount === 'number' &&
+    parsed.values.amount < config.minAmount
+  ) {
+    return { status: 202, body: { ok: true, delivered: 0, skipped: 'below_min_amount' } };
+  }
+
+  const alert = renderAlert({ eventTypeKey: key, values: parsed.values, config: config.render });
+  const delivered = publish(userId, alert);
+
+  await prisma.alertLog.create({
+    data: {
+      userId,
+      eventTypeKey: key,
+      payload: parsed.values,
+      renderedText: alert.text,
+      source,
+      deliveredTo: delivered,
+    },
+  });
+
+  return { status: 200, body: { ok: true, alertId: alert.id, delivered } };
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/sendAlert.test.ts`
+Expected: PASS (13 tests). Postgres must be up (`docker compose up -d`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add sendAlert core pipeline with skip cases and alert logging"
+```
+
+---
+
+## Task 7: Ingest keys and rate limiting
+
+**Files:**
+- Create: `src/lib/keys.ts`, `src/lib/ratelimit.ts`
+- Test: `tests/keys.test.ts`, `tests/ratelimit.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma`.
+- Produces:
+  - `generateKey(): { plain: string; hash: string; prefix: string }`
+  - `hashKey(plain: string): string` (sha256 hex)
+  - `resolveKey(plain: string): Promise<{ userId: string; keyId: string; prefix: string } | null>` — null for unknown or revoked keys, and it touches `lastUsedAt`.
+  - `take(bucketId: string, limit?: number, windowMs?: number): { ok: true } | { ok: false; retryAfter: number }`
+
+- [ ] **Step 1: Write the failing key tests**
+
+`tests/keys.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { generateKey, hashKey, resolveKey } from '@/lib/keys';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(resetDb);
+
+test('generated keys are prefixed, long, and unique', () => {
+  const a = generateKey();
+  const b = generateKey();
+  expect(a.plain).toMatch(/^oba_[A-Za-z0-9_-]{40,}$/);
+  expect(a.plain).not.toBe(b.plain);
+  expect(a.hash).toBe(hashKey(a.plain));
+  expect(a.plain.startsWith(a.prefix)).toBe(true);
+  expect(a.prefix.length).toBeLessThan(a.plain.length);
+});
+
+test('the plaintext key is never derivable from what is stored', () => {
+  const { plain, hash, prefix } = generateKey();
+  expect(hash).not.toContain(plain.slice(10));
+  expect(prefix).not.toBe(plain);
+});
+
+test('resolveKey returns the owning user and stamps lastUsedAt', async () => {
+  const { user } = await makeUser();
+  const k = generateKey();
+  const row = await prisma.ingestKey.create({
+    data: { userId: user.id, name: 'n8n', hash: k.hash, prefix: k.prefix },
+  });
+  expect(row.lastUsedAt).toBeNull();
+
+  const got = await resolveKey(k.plain);
+  expect(got).toMatchObject({ userId: user.id, keyId: row.id });
+  const after = await prisma.ingestKey.findUnique({ where: { id: row.id } });
+  expect(after?.lastUsedAt).not.toBeNull();
+});
+
+test('unknown, empty, and revoked keys all resolve to null', async () => {
+  const { user } = await makeUser();
+  const k = generateKey();
+  await prisma.ingestKey.create({
+    data: { userId: user.id, name: 'old', hash: k.hash, prefix: k.prefix, revokedAt: new Date() },
+  });
+  expect(await resolveKey(k.plain)).toBeNull();
+  expect(await resolveKey('oba_nonsense')).toBeNull();
+  expect(await resolveKey('')).toBeNull();
+});
+
+test('a key resolves only to its own owner', async () => {
+  const a = await makeUser();
+  await makeUser();
+  const k = generateKey();
+  await prisma.ingestKey.create({ data: { userId: a.user.id, name: 'k', hash: k.hash, prefix: k.prefix } });
+  expect((await resolveKey(k.plain))?.userId).toBe(a.user.id);
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/keys.test.ts`
+Expected: FAIL — cannot resolve `@/lib/keys`.
+
+- [ ] **Step 3: Implement keys**
+
+`src/lib/keys.ts`:
+
+```ts
+import { createHash, randomBytes } from 'node:crypto';
+import prisma from './db';
+
+/** sha256, not a slow KDF: keys are 32 random bytes, not human passwords, and
+ *  lookup is on the alert hot path. */
+export function hashKey(plain: string): string {
+  return createHash('sha256').update(plain).digest('hex');
+}
+
+export function generateKey() {
+  const plain = `oba_${randomBytes(32).toString('base64url')}`;
+  return { plain, hash: hashKey(plain), prefix: plain.slice(0, 12) };
+}
+
+export async function resolveKey(plain: string) {
+  if (!plain) return null;
+  const row = await prisma.ingestKey.findUnique({ where: { hash: hashKey(plain) } });
+  if (!row || row.revokedAt) return null;
+  await prisma.ingestKey.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } });
+  return { userId: row.userId, keyId: row.id, prefix: row.prefix };
+}
+```
+
+- [ ] **Step 4: Run the key tests and make sure they pass**
+
+Run: `npm test -- tests/keys.test.ts`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Write the failing rate limit tests**
+
+`tests/ratelimit.test.ts`:
+
+```ts
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { take, __reset } from '@/lib/ratelimit';
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  __reset();
+});
+afterEach(() => vi.useRealTimers());
+
+test('allows up to the limit then refuses', () => {
+  for (let i = 0; i < 3; i++) expect(take('k1', 3, 60000).ok).toBe(true);
+  const denied = take('k1', 3, 60000);
+  expect(denied.ok).toBe(false);
+  expect(!denied.ok && denied.retryAfter).toBeGreaterThan(0);
+});
+
+test('buckets are independent per id', () => {
+  take('k1', 1, 60000);
+  expect(take('k1', 1, 60000).ok).toBe(false);
+  expect(take('k2', 1, 60000).ok).toBe(true);
+});
+
+test('refills after the window elapses', () => {
+  take('k1', 1, 60000);
+  expect(take('k1', 1, 60000).ok).toBe(false);
+  vi.advanceTimersByTime(60001);
+  expect(take('k1', 1, 60000).ok).toBe(true);
+});
+
+test('retryAfter is whole seconds, at least 1', () => {
+  take('k1', 1, 60000);
+  const d = take('k1', 1, 60000);
+  expect(!d.ok && Number.isInteger(d.retryAfter)).toBe(true);
+  expect(!d.ok && d.retryAfter).toBeGreaterThanOrEqual(1);
+});
+```
+
+- [ ] **Step 6: Run them to make sure they fail**
+
+Run: `npm test -- tests/ratelimit.test.ts`
+Expected: FAIL — cannot resolve `@/lib/ratelimit`.
+
+- [ ] **Step 7: Implement the rate limiter**
+
+`src/lib/ratelimit.ts`:
+
+```ts
+// ponytail: fixed-window counter in process memory. Ceiling: limits are per
+// instance, and restarts forget them. Upgrade path: Redis INCR with EXPIRE.
+type Window = { count: number; resetAt: number };
+
+const g = globalThis as unknown as { __rl?: Map<string, Window> };
+const windows: Map<string, Window> = (g.__rl ??= new Map());
+
+export function take(
+  bucketId: string,
+  limit = 60,
+  windowMs = 60_000
+): { ok: true } | { ok: false; retryAfter: number } {
+  const now = Date.now();
+  const w = windows.get(bucketId);
+  if (!w || now >= w.resetAt) {
+    windows.set(bucketId, { count: 1, resetAt: now + windowMs });
+    return { ok: true };
+  }
+  if (w.count < limit) {
+    w.count++;
+    return { ok: true };
+  }
+  return { ok: false, retryAfter: Math.max(1, Math.ceil((w.resetAt - now) / 1000)) };
+}
+
+/** Test-only. */
+export function __reset() {
+  windows.clear();
+}
+```
+
+- [ ] **Step 8: Run the rate limit tests and make sure they pass**
+
+Run: `npm test -- tests/ratelimit.test.ts`
+Expected: PASS (4 tests).
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add ingest key generation/resolution and per-key rate limiting"
+```
+
+---
+
+## Task 8: Public alert API
+
+**Files:**
+- Create: `src/lib/apiAlert.ts`, `src/app/api/v1/alerts/[key]/route.ts`, `src/app/api/v1/alerts/route.ts`
+- Test: `tests/apiAlert.test.ts`
+
+**Interfaces:**
+- Consumes: `resolveKey`, `take`, `sendAlert`, `subscribe`.
+- Produces: `handleAlertRequest(req: Request, keyFromPath?: string): Promise<Response>` — used by both routes. Route handler signature for the path form is `POST(req: Request, ctx: { params: Promise<{ key: string }> })`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/apiAlert.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { handleAlertRequest } from '@/lib/apiAlert';
+import { generateKey } from '@/lib/keys';
+import { __reset as resetHub, subscribe } from '@/lib/hub';
+import { __reset as resetRl } from '@/lib/ratelimit';
+import { makeUser, resetDb } from './helpers/db';
+
+const body = { type: 'donation', name: 'bob', amount: 500, currency: 'USD' };
+
+async function seedKey() {
+  const { user } = await makeUser();
+  const k = generateKey();
+  await prisma.ingestKey.create({ data: { userId: user.id, name: 'n8n', hash: k.hash, prefix: k.prefix } });
+  return { user, plain: k.plain };
+}
+
+const post = (payload: unknown, headers: Record<string, string> = {}) =>
+  new Request('http://localhost/api/v1/alerts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+  });
+
+beforeEach(async () => {
+  resetHub();
+  resetRl();
+  await resetDb();
+});
+
+test('a valid key in the path delivers the alert', async () => {
+  const { user, plain } = await seedKey();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  const res = await handleAlertRequest(post(body), plain);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ ok: true, delivered: 1 });
+  expect(JSON.parse(frames[0].slice(6)).text).toBe('bob donated $500.00!');
+});
+
+test('the same key works as a bearer header', async () => {
+  const { plain } = await seedKey();
+  const res = await handleAlertRequest(post(body, { authorization: `Bearer ${plain}` }));
+  expect(res.status).toBe(200);
+});
+
+test('missing, unknown, and revoked keys all give an identical 401', async () => {
+  const { plain } = await seedKey();
+  await prisma.ingestKey.updateMany({ data: { revokedAt: new Date() } });
+
+  for (const res of [
+    await handleAlertRequest(post(body)),
+    await handleAlertRequest(post(body), 'oba_wrong'),
+    await handleAlertRequest(post(body), plain),
+  ]) {
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'invalid ingest key' });
+  }
+});
+
+test('another users key cannot reach this users overlay', async () => {
+  const a = await seedKey();
+  const b = await makeUser();
+  const bFrames: string[] = [];
+  subscribe(b.user.id, (f) => bFrames.push(f));
+
+  await handleAlertRequest(post(body), a.plain);
+  expect(bFrames).toHaveLength(0);
+});
+
+test('invalid JSON gives 400', async () => {
+  const { plain } = await seedKey();
+  const res = await handleAlertRequest(post('{"type":'), plain);
+  expect(res.status).toBe(400);
+  expect(await res.json()).toEqual({ error: 'invalid JSON' });
+});
+
+test('unknown type gives 400 with the known list', async () => {
+  const { plain } = await seedKey();
+  const res = await handleAlertRequest(post({ type: 'nope' }), plain);
+  expect(res.status).toBe(400);
+  expect((await res.json()).known).toContain('follow');
+});
+
+test('a body over 64KB gives 413 and never reaches sendAlert', async () => {
+  const { plain } = await seedKey();
+  const huge = { type: 'donation', name: 'bob', amount: 1, message: 'x'.repeat(70_000) };
+  const res = await handleAlertRequest(post(huge), plain);
+  expect(res.status).toBe(413);
+  expect(await prisma.alertLog.count()).toBe(0);
+});
+
+test('the 61st alert in a minute gives 429 with Retry-After', async () => {
+  const { plain } = await seedKey();
+  for (let i = 0; i < 60; i++) {
+    expect((await handleAlertRequest(post(body), plain)).status).toBe(200);
+  }
+  const res = await handleAlertRequest(post(body), plain);
+  expect(res.status).toBe(429);
+  expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+});
+
+test('a disabled type gives 202 skipped', async () => {
+  const { user, plain } = await seedKey();
+  await prisma.alertConfig.create({
+    data: { userId: user.id, eventTypeKey: 'donation', enabled: false, template: '{name}', style: {} },
+  });
+  const res = await handleAlertRequest(post(body), plain);
+  expect(res.status).toBe(202);
+  expect((await res.json()).skipped).toBe('disabled');
+});
+
+test('the log records source api', async () => {
+  const { plain } = await seedKey();
+  await handleAlertRequest(post(body), plain);
+  expect((await prisma.alertLog.findFirst())?.source).toBe('api');
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/apiAlert.test.ts`
+Expected: FAIL — cannot resolve `@/lib/apiAlert`.
+
+- [ ] **Step 3: Implement the shared handler**
+
+`src/lib/apiAlert.ts`:
+
+```ts
+import { resolveKey } from './keys';
+import { take } from './ratelimit';
+import { sendAlert } from './sendAlert';
+
+const MAX_BODY = 64 * 1024;
+
+function bearer(req: Request): string {
+  const h = req.headers.get('authorization') ?? '';
+  const m = /^Bearer\s+(.+)$/i.exec(h.trim());
+  return m ? m[1].trim() : '';
+}
+
+export async function handleAlertRequest(req: Request, keyFromPath?: string): Promise<Response> {
+  const plain = keyFromPath?.trim() || bearer(req);
+  const key = await resolveKey(plain);
+  // Identical body for missing, unknown, and revoked: no oracle for key probing.
+  if (!key) return Response.json({ error: 'invalid ingest key' }, { status: 401 });
+
+  const gate = take(key.keyId);
+  if (!gate.ok) {
+    return Response.json(
+      { error: 'rate limit exceeded' },
+      { status: 429, headers: { 'retry-after': String(gate.retryAfter) } }
+    );
+  }
+
+  const raw = await req.text();
+  if (Buffer.byteLength(raw) > MAX_BODY) {
+    return Response.json({ error: 'body too large' }, { status: 413 });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return Response.json({ error: 'invalid JSON' }, { status: 400 });
+  }
+
+  const result = await sendAlert(key.userId, parsed, 'api');
+  // Log the key prefix only — never the full key or request path.
+  console.log(`alert ${key.prefix} -> ${result.status}`);
+  return Response.json(result.body, { status: result.status });
+}
+```
+
+- [ ] **Step 4: Implement both routes**
+
+`src/app/api/v1/alerts/[key]/route.ts`:
+
+```ts
+import { handleAlertRequest } from '@/lib/apiAlert';
+
+export async function POST(req: Request, ctx: { params: Promise<{ key: string }> }) {
+  const { key } = await ctx.params;
+  return handleAlertRequest(req, key);
+}
+```
+
+`src/app/api/v1/alerts/route.ts`:
+
+```ts
+import { handleAlertRequest } from '@/lib/apiAlert';
+
+export async function POST(req: Request) {
+  return handleAlertRequest(req);
+}
+```
+
+- [ ] **Step 5: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/apiAlert.test.ts`
+Expected: PASS (10 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add public alert API with path-key and bearer auth"
+```
+
+---
+
+## Task 9: Overlay SSE route
+
+**Files:**
+- Create: `src/app/api/overlay/[token]/events/route.ts`
+- Test: `tests/overlayEvents.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma`, `subscribe`, `countFor`.
+- Produces: `GET(req, ctx: { params: Promise<{ token: string }> })` returning an SSE `Response`, plus `export const dynamic = 'force-dynamic'`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/overlayEvents.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import { GET } from '@/app/api/overlay/[token]/events/route';
+import { countFor, publish, __reset } from '@/lib/hub';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(async () => {
+  __reset();
+  await resetDb();
+});
+
+const params = (token: string) => ({ params: Promise.resolve({ token }) });
+
+test('an unknown token gives 404 and registers no subscriber', async () => {
+  const res = await GET(new Request('http://localhost'), params('nope'));
+  expect(res.status).toBe(404);
+});
+
+test('a valid token opens an event-stream and subscribes the user', async () => {
+  const { user, overlay } = await makeUser();
+  const res = await GET(new Request('http://localhost'), params(overlay.token));
+
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toContain('text/event-stream');
+  expect(res.headers.get('cache-control')).toContain('no-store');
+  expect(res.headers.get('x-accel-buffering')).toBe('no');
+
+  const reader = res.body!.getReader();
+  const first = new TextDecoder().decode((await reader.read()).value);
+  expect(first).toContain(': connected');
+  expect(countFor(user.id)).toBe(1);
+
+  publish(user.id, { text: 'bob followed' });
+  const frame = new TextDecoder().decode((await reader.read()).value);
+  expect(JSON.parse(frame.slice(6)).text).toBe('bob followed');
+
+  await reader.cancel();
+});
+
+test('cancelling the stream unsubscribes', async () => {
+  const { user, overlay } = await makeUser();
+  const res = await GET(new Request('http://localhost'), params(overlay.token));
+  const reader = res.body!.getReader();
+  await reader.read();
+  expect(countFor(user.id)).toBe(1);
+
+  await reader.cancel();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(countFor(user.id)).toBe(0);
+});
+
+test('a token only subscribes to its own owner', async () => {
+  const a = await makeUser();
+  const b = await makeUser();
+  const res = await GET(new Request('http://localhost'), params(a.overlay.token));
+  const reader = res.body!.getReader();
+  await reader.read();
+
+  expect(countFor(a.user.id)).toBe(1);
+  expect(countFor(b.user.id)).toBe(0);
+  await reader.cancel();
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/overlayEvents.test.ts`
+Expected: FAIL — cannot resolve the route module.
+
+- [ ] **Step 3: Implement the SSE route**
+
+`src/app/api/overlay/[token]/events/route.ts`:
+
+```ts
+import prisma from '@/lib/db';
+import { subscribe } from '@/lib/hub';
+
+export const dynamic = 'force-dynamic'; // never cache or prerender a live stream
+
+export async function GET(_req: Request, ctx: { params: Promise<{ token: string }> }) {
+  const { token } = await ctx.params;
+  const overlay = await prisma.overlay.findUnique({ where: { token } });
+  if (!overlay) return Response.json({ error: 'unknown overlay' }, { status: 404 });
+
+  const encoder = new TextEncoder();
+  let unsubscribe = () => {};
+  let ping: ReturnType<typeof setInterval>;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const push = (frame: string) => controller.enqueue(encoder.encode(frame));
+      push(': connected\n\n');
+      unsubscribe = subscribe(overlay.userId, push);
+      // Keeps intermediary proxies from idling the connection out.
+      ping = setInterval(() => {
+        try {
+          push(': ping\n\n');
+        } catch {
+          clearInterval(ping);
+        }
+      }, 15_000);
+    },
+    cancel() {
+      clearInterval(ping);
+      unsubscribe();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no', // nginx: do not buffer this response
+    },
+  });
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/overlayEvents.test.ts`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add token-keyed overlay SSE route"
+```
+
+---
+
+## Task 10: Overlay page
+
+**Files:**
+- Create: `src/app/overlay/[token]/page.tsx`, `src/app/overlay/[token]/OverlayClient.tsx`, `src/lib/queue.ts`
+- Test: `tests/queue.test.ts`
+
+**Interfaces:**
+- Consumes: `AlertPayload` from `@/lib/render`, `prisma`.
+- Produces: `createQueue(opts: { cap?: number; play: (a: AlertPayload, done: () => void) => void }): { push(a: AlertPayload): void; size(): number; dropped(): number }` — the serial queue, extracted from the component so it is testable without a DOM.
+
+The queue is the part with real logic, so it is the part under test; the React component around it is wiring verified by running the app.
+
+- [ ] **Step 1: Write the failing queue tests**
+
+`tests/queue.test.ts`:
+
+```ts
+import { expect, test, vi } from 'vitest';
+import { createQueue } from '@/lib/queue';
+import type { AlertPayload } from '@/lib/render';
+
+const alert = (id: string) => ({ id, text: id }) as AlertPayload;
+
+test('plays alerts one at a time, in order', () => {
+  const played: string[] = [];
+  let finish = () => {};
+  const q = createQueue({
+    play: (a, done) => {
+      played.push(a.id);
+      finish = done;
+    },
+  });
+
+  q.push(alert('a'));
+  q.push(alert('b'));
+  expect(played).toEqual(['a']); // b waits
+
+  finish();
+  expect(played).toEqual(['a', 'b']);
+});
+
+test('an idle queue plays immediately', () => {
+  const played: string[] = [];
+  const q = createQueue({ play: (a, done) => { played.push(a.id); done(); } });
+  q.push(alert('a'));
+  expect(played).toEqual(['a']);
+  expect(q.size()).toBe(0);
+});
+
+test('drops the oldest waiting alert beyond the cap', () => {
+  const played: string[] = [];
+  const q = createQueue({ cap: 2, play: (a) => played.push(a.id) }); // never calls done
+  q.push(alert('playing'));
+  q.push(alert('w1'));
+  q.push(alert('w2'));
+  q.push(alert('w3'));
+
+  expect(played).toEqual(['playing']);
+  expect(q.size()).toBe(2);
+  expect(q.dropped()).toBe(1);
+});
+
+test('a throwing play call does not wedge the queue', () => {
+  const played: string[] = [];
+  const q = createQueue({
+    play: (a, done) => {
+      played.push(a.id);
+      if (a.id === 'bad') throw new Error('audio failed');
+      done();
+    },
+  });
+  q.push(alert('bad'));
+  q.push(alert('good'));
+  expect(played).toEqual(['bad', 'good']);
+});
+
+test('done called twice advances only once', () => {
+  const played: string[] = [];
+  let finish = () => {};
+  const q = createQueue({ play: (a, done) => { played.push(a.id); finish = done; } });
+  q.push(alert('a'));
+  q.push(alert('b'));
+  q.push(alert('c'));
+  finish();
+  const afterFirst = [...played];
+  finish(); // stale callback from the already-finished alert
+  expect(played).toEqual(afterFirst);
+});
+
+test('ten alerts fired at once all play, none lost', () => {
+  const played: string[] = [];
+  const q = createQueue({ play: (a, done) => { played.push(a.id); done(); } });
+  for (let i = 0; i < 10; i++) q.push(alert(`a${i}`));
+  expect(played).toHaveLength(10);
+  expect(q.dropped()).toBe(0);
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/queue.test.ts`
+Expected: FAIL — cannot resolve `@/lib/queue`.
+
+- [ ] **Step 3: Implement the queue**
+
+`src/lib/queue.ts`:
+
+```ts
+import type { AlertPayload } from './render';
+
+export function createQueue(opts: {
+  cap?: number;
+  play: (a: AlertPayload, done: () => void) => void;
+}) {
+  const cap = opts.cap ?? 50;
+  const waiting: AlertPayload[] = [];
+  let busy = false;
+  let dropped = 0;
+
+  function next() {
+    const a = waiting.shift();
+    if (!a) {
+      busy = false;
+      return;
+    }
+    busy = true;
+    let settled = false;
+    const done = () => {
+      if (settled) return; // a stale callback must not advance twice
+      settled = true;
+      next();
+    };
+    try {
+      opts.play(a, done);
+    } catch {
+      done(); // a broken alert must not wedge the overlay
+    }
+  }
+
+  return {
+    push(a: AlertPayload) {
+      waiting.push(a);
+      while (waiting.length > cap) {
+        waiting.shift();
+        dropped++;
+      }
+      if (!busy) next();
+    },
+    size: () => waiting.length,
+    dropped: () => dropped,
+  };
+}
+```
+
+- [ ] **Step 4: Run the queue tests and make sure they pass**
+
+Run: `npm test -- tests/queue.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Implement the overlay page shell**
+
+`src/app/overlay/[token]/page.tsx`:
+
+```tsx
+import { notFound } from 'next/navigation';
+import prisma from '@/lib/db';
+import OverlayClient from './OverlayClient';
+
+export const dynamic = 'force-dynamic';
+
+export default async function OverlayPage(ctx: { params: Promise<{ token: string }> }) {
+  const { token } = await ctx.params;
+  const overlay = await prisma.overlay.findUnique({ where: { token } });
+  if (!overlay) notFound();
+  return <OverlayClient token={token} />;
+}
+```
+
+- [ ] **Step 6: Implement the overlay client**
+
+`src/app/overlay/[token]/OverlayClient.tsx`:
+
+```tsx
+'use client';
+
+import { useEffect, useRef } from 'react';
+import { createQueue } from '@/lib/queue';
+import type { AlertPayload } from '@/lib/render';
+
+const POS: Record<string, string> = {
+  'top-left': 'top:6vh;left:4vw',
+  top: 'top:6vh;left:50%;transform:translateX(-50%)',
+  'top-right': 'top:6vh;right:4vw',
+  center: 'top:50%;left:50%;transform:translate(-50%,-50%)',
+  'bottom-left': 'bottom:6vh;left:4vw',
+  bottom: 'bottom:6vh;left:50%;transform:translateX(-50%)',
+  'bottom-right': 'bottom:6vh;right:4vw',
+};
+
+export default function OverlayClient({ token }: { token: string }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    /** Builds the alert DOM. Every dynamic value is set with textContent or a
+     *  style property — never innerHTML — so donor text cannot become markup. */
+    function show(a: AlertPayload, done: () => void) {
+      const style = a.style ?? {};
+      const card = document.createElement('div');
+      card.className = `card anim-${style.anim ?? 'fade'}`;
+      card.style.cssText = [
+        POS[style.pos ?? 'top'] ?? POS.top,
+        `--accent:${style.accent ?? '#7c5cff'}`,
+        `--bg:${style.bg ?? 'rgba(12,12,16,0.86)'}`,
+        `--fg:${style.fg ?? '#fff'}`,
+        `--font:${style.font ?? 'system-ui, sans-serif'}`,
+        `--size:${style.size ?? 34}px`,
+        `--width:${style.width ?? 640}px`,
+        `--radius:${style.radius ?? 16}px`,
+      ].join(';');
+
+      if (a.imageUrl) {
+        const img = document.createElement('img');
+        img.src = a.imageUrl;
+        img.alt = '';
+        card.append(img);
+      }
+      if (a.title) {
+        const t = document.createElement('div');
+        t.className = 'title';
+        t.textContent = a.title;
+        card.append(t);
+      }
+      const text = document.createElement('div');
+      text.className = 'text';
+      text.textContent = a.text;
+      card.append(text);
+      if (a.message) {
+        const m = document.createElement('div');
+        m.className = 'message';
+        m.textContent = a.message;
+        card.append(m);
+      }
+
+      root.append(card);
+      requestAnimationFrame(() => card.classList.add('in'));
+
+      let audio: HTMLAudioElement | undefined;
+      if (a.soundUrl) {
+        audio = new Audio(a.soundUrl);
+        audio.volume = Math.min(1, Math.max(0, (a.soundVolume ?? 80) / 100));
+        void audio.play().catch(() => {}); // autoplay refusal must not stall the queue
+      }
+
+      setTimeout(() => {
+        card.classList.remove('in');
+        setTimeout(() => {
+          card.remove();
+          audio?.pause();
+          done();
+        }, 400);
+      }, a.durationMs ?? 5000);
+    }
+
+    const queue = createQueue({ play: show });
+
+    const es = new EventSource(`/api/overlay/${token}/events`);
+    es.onmessage = (e) => {
+      try {
+        queue.push(JSON.parse(e.data) as AlertPayload);
+      } catch {
+        /* ignore a malformed frame */
+      }
+    };
+
+    // Dashboard live preview: same-origin parent posts a rendered alert.
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.data?.kind === 'preview-alert') queue.push(e.data.alert as AlertPayload);
+    };
+    window.addEventListener('message', onMessage);
+
+    return () => {
+      es.close();
+      window.removeEventListener('message', onMessage);
+    };
+  }, [token]);
+
+  return (
+    <>
+      <style>{`
+        html,body{margin:0;background:transparent;overflow:hidden}
+        .card{position:fixed;width:var(--width);max-width:92vw;box-sizing:border-box;
+          padding:20px 24px;border-radius:var(--radius);background:var(--bg);color:var(--fg);
+          font-family:var(--font);font-size:var(--size);text-align:center;
+          border-top:4px solid var(--accent);opacity:0;transition:opacity .35s, transform .35s}
+        .card.in{opacity:1}
+        .anim-slide{translate:0 -24px} .anim-slide.in{translate:0 0}
+        .anim-pop{scale:.88} .anim-pop.in{scale:1}
+        .card img{display:block;margin:0 auto 12px;max-width:100%;max-height:34vh}
+        .title{font-size:.42em;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+        .text{font-weight:700;line-height:1.2;word-break:break-word}
+        .message{margin-top:10px;font-size:.5em;opacity:.85;word-break:break-word}
+      `}</style>
+      <div ref={rootRef} />
+    </>
+  );
+}
+```
+
+- [ ] **Step 7: Verify it end to end by hand**
+
+```bash
+npm run dev
+# then, with the overlay token of a seeded user:
+open "http://localhost:3000/overlay/<token>"
+curl -s -X POST "http://localhost:3000/api/v1/alerts/<ingest_key>" \
+  -H 'content-type: application/json' \
+  -d '{"type":"donation","name":"<b>bob</b>","amount":500,"currency":"USD","message":"gg"}'
+```
+
+Expected: the alert animates in and out; `<b>bob</b>` appears as literal text, not bold. Fire ten in a row and confirm they play in sequence without overlapping. Ingest keys come from Task 12's settings page, so until then create one from a Node REPL with `generateKey()` and a `prisma.ingestKey.create`.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add overlay page with serial alert queue and text-node rendering"
+```
+
+---
+
+## Task 11: Authentication
+
+**Files:**
+- Create: `src/lib/auth-user.ts`, `src/auth.ts`, `src/app/(auth)/signup/page.tsx`, `src/app/(auth)/login/page.tsx`, `src/app/(auth)/actions.ts`, `src/app/api/auth/[...nextauth]/route.ts`, `src/middleware.ts`
+- Test: `tests/authUser.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma`, `@node-rs/argon2`.
+- Produces:
+  - `createUser(email: string, password: string): Promise<{ id: string } | { error: string }>` — also creates that user's default `Overlay` row.
+  - `verifyCredentials(email: string, password: string): Promise<{ id: string; email: string } | null>`
+  - `auth()` from `src/auth.ts` — the session accessor used by every dashboard page and action.
+  - `requireUserId(): Promise<string>` from `src/auth.ts` — redirects to `/login` when unauthenticated.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/authUser.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { createUser, verifyCredentials } from '@/lib/auth-user';
+import { resetDb } from './helpers/db';
+
+beforeEach(resetDb);
+
+test('creates a user, hashes the password, and provisions an overlay', async () => {
+  const r = await createUser('a@test.dev', 'correct horse battery');
+  expect('id' in r).toBe(true);
+
+  const row = await prisma.user.findUnique({ where: { email: 'a@test.dev' } });
+  expect(row!.passwordHash).not.toContain('correct horse');
+  expect(row!.passwordHash.startsWith('$argon2')).toBe(true);
+
+  const overlay = await prisma.overlay.findFirst({ where: { userId: row!.id } });
+  expect(overlay!.token).toHaveLength(43); // 32 bytes base64url
+});
+
+test('normalizes the email and refuses duplicates', async () => {
+  await createUser('a@test.dev', 'correct horse battery');
+  const dup = await createUser('  A@Test.dev ', 'another password');
+  expect(dup).toEqual({ error: 'email already registered' });
+  expect(await prisma.user.count()).toBe(1);
+});
+
+test('refuses a short password and a malformed email', async () => {
+  expect(await createUser('a@test.dev', 'short')).toEqual({
+    error: 'password must be at least 8 characters',
+  });
+  expect(await createUser('nope', 'correct horse battery')).toEqual({ error: 'invalid email' });
+  expect(await prisma.user.count()).toBe(0);
+});
+
+test('verifies correct credentials, case-insensitively on email', async () => {
+  await createUser('a@test.dev', 'correct horse battery');
+  expect(await verifyCredentials('A@TEST.DEV', 'correct horse battery')).toMatchObject({
+    email: 'a@test.dev',
+  });
+});
+
+test('rejects a wrong password and an unknown email', async () => {
+  await createUser('a@test.dev', 'correct horse battery');
+  expect(await verifyCredentials('a@test.dev', 'wrong')).toBeNull();
+  expect(await verifyCredentials('nobody@test.dev', 'correct horse battery')).toBeNull();
+  expect(await verifyCredentials('', '')).toBeNull();
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/authUser.test.ts`
+Expected: FAIL — cannot resolve `@/lib/auth-user`.
+
+- [ ] **Step 3: Implement user creation and verification**
+
+`src/lib/auth-user.ts`:
+
+```ts
+import { randomBytes } from 'node:crypto';
+import { hash, verify } from '@node-rs/argon2';
+import prisma from './db';
+
+const normalize = (email: string) => email.trim().toLowerCase();
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function newOverlayToken() {
+  return randomBytes(32).toString('base64url');
+}
+
+export async function createUser(email: string, password: string) {
+  const e = normalize(email);
+  if (!EMAIL.test(e)) return { error: 'invalid email' };
+  if (password.length < 8) return { error: 'password must be at least 8 characters' };
+  if (await prisma.user.findUnique({ where: { email: e } })) {
+    return { error: 'email already registered' };
+  }
+  const user = await prisma.user.create({
+    data: {
+      email: e,
+      passwordHash: await hash(password), // argon2id is @node-rs/argon2's default
+      overlays: { create: { token: newOverlayToken() } },
+    },
+  });
+  return { id: user.id };
+}
+
+export async function verifyCredentials(email: string, password: string) {
+  if (!email || !password) return null;
+  const user = await prisma.user.findUnique({ where: { email: normalize(email) } });
+  if (!user) return null;
+  try {
+    if (!(await verify(user.passwordHash, password))) return null;
+  } catch {
+    return null; // stored hash unreadable
+  }
+  return { id: user.id, email: user.email };
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/authUser.test.ts`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Wire up Auth.js**
+
+`src/auth.ts`:
+
+```ts
+import NextAuth from 'next-auth';
+import Credentials from 'next-auth/providers/credentials';
+import { redirect } from 'next/navigation';
+import { verifyCredentials } from '@/lib/auth-user';
+
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  // JWT sessions: the Credentials provider cannot use database sessions, and this
+  // keeps session reads off the DB on every dashboard request.
+  session: { strategy: 'jwt' },
+  pages: { signIn: '/login' },
+  providers: [
+    Credentials({
+      credentials: { email: {}, password: {} },
+      authorize: async (c) =>
+        verifyCredentials(String(c.email ?? ''), String(c.password ?? '')),
+    }),
+  ],
+  callbacks: {
+    jwt({ token, user }) {
+      if (user) token.uid = user.id;
+      return token;
+    },
+    session({ session, token }) {
+      if (token.uid) session.user.id = token.uid as string;
+      return session;
+    },
+  },
+});
+
+export async function requireUserId(): Promise<string> {
+  const session = await auth();
+  const id = session?.user?.id;
+  if (!id) redirect('/login');
+  return id;
+}
+```
+
+`src/app/api/auth/[...nextauth]/route.ts`:
+
+```ts
+export { GET, POST } from '@/auth';
+```
+
+`src/middleware.ts`:
+
+```ts
+export { auth as middleware } from '@/auth';
+
+// Overlay and alert API routes must stay outside auth: OBS loads the overlay with
+// no cookie, and the API authenticates by ingest key.
+export const config = { matcher: ['/dashboard/:path*'] };
+```
+
+- [ ] **Step 6: Build the signup and login pages**
+
+`src/app/(auth)/actions.ts`:
+
+```ts
+'use server';
+
+import { redirect } from 'next/navigation';
+import { signIn } from '@/auth';
+import { createUser } from '@/lib/auth-user';
+
+export async function signupAction(_prev: unknown, form: FormData) {
+  const email = String(form.get('email') ?? '');
+  const password = String(form.get('password') ?? '');
+  const r = await createUser(email, password);
+  if ('error' in r) return { error: r.error };
+  await signIn('credentials', { email, password, redirect: false });
+  redirect('/dashboard');
+}
+
+export async function loginAction(_prev: unknown, form: FormData) {
+  try {
+    await signIn('credentials', {
+      email: String(form.get('email') ?? ''),
+      password: String(form.get('password') ?? ''),
+      redirect: false,
+    });
+  } catch {
+    return { error: 'invalid email or password' };
+  }
+  redirect('/dashboard');
+}
+```
+
+`src/app/(auth)/signup/page.tsx`:
+
+```tsx
+'use client';
+
+import { useActionState } from 'react';
+import { signupAction } from '../actions';
+
+export default function Signup() {
+  const [state, action, pending] = useActionState(signupAction, null);
+  return (
+    <form action={action} style={{ maxWidth: 320, margin: '10vh auto', display: 'grid', gap: 10 }}>
+      <h1>Create account</h1>
+      <input name="email" type="email" placeholder="you@example.com" required />
+      <input name="password" type="password" placeholder="password (8+ chars)" required minLength={8} />
+      {state?.error && <p style={{ color: 'crimson' }}>{state.error}</p>}
+      <button disabled={pending}>Sign up</button>
+      <a href="/login">I already have an account</a>
+    </form>
+  );
+}
+```
+
+`src/app/(auth)/login/page.tsx` — the same form calling `loginAction`, heading "Log in", linking to `/signup`.
+
+- [ ] **Step 7: Verify the flow by hand**
+
+Run: `npm run dev`, then sign up at `http://localhost:3000/signup`.
+Expected: redirected to `/dashboard`; visiting `/dashboard` in a private window redirects to `/login`; `/overlay/<token>` still loads with no session.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add email/password auth with argon2id and JWT sessions"
+```
+
+---
+
+## Task 12: Settings — overlay URL and ingest keys
+
+**Files:**
+- Create: `src/app/dashboard/settings/page.tsx`, `src/app/dashboard/settings/actions.ts`
+- Test: `tests/settingsActions.test.ts`
+
+**Interfaces:**
+- Consumes: `requireUserId`, `generateKey`, `newOverlayToken`, `prisma`.
+- Produces (all take the acting `userId` explicitly so they are testable without a session):
+  - `createIngestKeyFor(userId: string, name: string): Promise<{ plain: string; prefix: string }>`
+  - `revokeIngestKeyFor(userId: string, keyId: string): Promise<{ ok: boolean }>`
+  - `rotateOverlayTokenFor(userId: string): Promise<{ token: string }>`
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/settingsActions.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import {
+  createIngestKeyFor,
+  revokeIngestKeyFor,
+  rotateOverlayTokenFor,
+} from '@/app/dashboard/settings/actions';
+import { hashKey, resolveKey } from '@/lib/keys';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(resetDb);
+
+test('creates a usable key and stores only its hash and prefix', async () => {
+  const { user } = await makeUser();
+  const { plain } = await createIngestKeyFor(user.id, 'n8n prod');
+
+  const row = await prisma.ingestKey.findFirst({ where: { userId: user.id } });
+  expect(row!.name).toBe('n8n prod');
+  expect(row!.hash).toBe(hashKey(plain));
+  expect(JSON.stringify(row)).not.toContain(plain.slice(10));
+  expect((await resolveKey(plain))?.userId).toBe(user.id);
+});
+
+test('names an unnamed key rather than storing blank', async () => {
+  const { user } = await makeUser();
+  await createIngestKeyFor(user.id, '   ');
+  expect((await prisma.ingestKey.findFirst())!.name).toBe('Untitled key');
+});
+
+test('revoking a key makes it stop working, keeping the row for audit', async () => {
+  const { user } = await makeUser();
+  const { plain } = await createIngestKeyFor(user.id, 'k');
+  const row = await prisma.ingestKey.findFirst({ where: { userId: user.id } });
+
+  expect(await revokeIngestKeyFor(user.id, row!.id)).toEqual({ ok: true });
+  expect(await resolveKey(plain)).toBeNull();
+  expect(await prisma.ingestKey.count()).toBe(1);
+});
+
+test('a user cannot revoke another users key', async () => {
+  const a = await makeUser();
+  const b = await makeUser();
+  await createIngestKeyFor(a.user.id, 'k');
+  const row = await prisma.ingestKey.findFirst({ where: { userId: a.user.id } });
+
+  expect(await revokeIngestKeyFor(b.user.id, row!.id)).toEqual({ ok: false });
+  expect((await prisma.ingestKey.findUnique({ where: { id: row!.id } }))!.revokedAt).toBeNull();
+});
+
+test('multiple keys coexist and revoking one leaves the other working', async () => {
+  const { user } = await makeUser();
+  const k1 = await createIngestKeyFor(user.id, 'one');
+  const k2 = await createIngestKeyFor(user.id, 'two');
+  const row1 = await prisma.ingestKey.findFirst({ where: { name: 'one' } });
+
+  await revokeIngestKeyFor(user.id, row1!.id);
+  expect(await resolveKey(k1.plain)).toBeNull();
+  expect(await resolveKey(k2.plain)).not.toBeNull();
+});
+
+test('rotating the overlay token invalidates the old one', async () => {
+  const { user, overlay } = await makeUser();
+  const { token } = await rotateOverlayTokenFor(user.id);
+
+  expect(token).not.toBe(overlay.token);
+  expect(await prisma.overlay.findUnique({ where: { token: overlay.token } })).toBeNull();
+  expect((await prisma.overlay.findUnique({ where: { token } }))!.userId).toBe(user.id);
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/settingsActions.test.ts`
+Expected: FAIL — cannot resolve the actions module.
+
+- [ ] **Step 3: Implement the actions**
+
+`src/app/dashboard/settings/actions.ts`:
+
+```ts
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { requireUserId } from '@/auth';
+import prisma from '@/lib/db';
+import { generateKey } from '@/lib/keys';
+import { newOverlayToken } from '@/lib/auth-user';
+
+export async function createIngestKeyFor(userId: string, name: string) {
+  const k = generateKey();
+  await prisma.ingestKey.create({
+    data: { userId, name: name.trim() || 'Untitled key', hash: k.hash, prefix: k.prefix },
+  });
+  return { plain: k.plain, prefix: k.prefix }; // plaintext returned once, never stored
+}
+
+export async function revokeIngestKeyFor(userId: string, keyId: string) {
+  // userId in the filter is the tenant check: a mismatch updates nothing.
+  const { count } = await prisma.ingestKey.updateMany({
+    where: { id: keyId, userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  return { ok: count === 1 };
+}
+
+export async function rotateOverlayTokenFor(userId: string) {
+  const token = newOverlayToken();
+  await prisma.overlay.updateMany({ where: { userId }, data: { token } });
+  return { token };
+}
+
+// Form entrances: session-authenticated wrappers over the same functions.
+
+export async function createKeyAction(form: FormData) {
+  const userId = await requireUserId();
+  const { plain } = await createIngestKeyFor(userId, String(form.get('name') ?? ''));
+  revalidatePath('/dashboard/settings');
+  return { plain };
+}
+
+export async function revokeKeyAction(form: FormData) {
+  const userId = await requireUserId();
+  await revokeIngestKeyFor(userId, String(form.get('keyId') ?? ''));
+  revalidatePath('/dashboard/settings');
+}
+
+export async function rotateTokenAction() {
+  const userId = await requireUserId();
+  await rotateOverlayTokenFor(userId);
+  revalidatePath('/dashboard/settings');
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/settingsActions.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Build the settings page**
+
+`src/app/dashboard/settings/page.tsx`:
+
+```tsx
+import { requireUserId } from '@/auth';
+import prisma from '@/lib/db';
+import { createKeyAction, revokeKeyAction, rotateTokenAction } from './actions';
+
+export default async function Settings() {
+  const userId = await requireUserId();
+  const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
+  const overlay = await prisma.overlay.findFirst({ where: { userId } });
+  const keys = await prisma.ingestKey.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+
+  return (
+    <main style={{ maxWidth: 760, margin: '4vh auto', display: 'grid', gap: 28 }}>
+      <section>
+        <h2>OBS Browser Source URL</h2>
+        <code>{`${base}/overlay/${overlay?.token}`}</code>
+        <p>Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.</p>
+        <form action={rotateTokenAction}>
+          <button>Rotate overlay token</button>
+        </form>
+        <p>Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+      </section>
+
+      <section>
+        <h2>Ingest keys</h2>
+        <form action={createKeyAction} style={{ display: 'flex', gap: 8 }}>
+          <input name="name" placeholder="n8n prod" />
+          <button>Create key</button>
+        </form>
+        <p>The full key is shown once, immediately after creation. Store it in your workflow tool.</p>
+        <ul>
+          {keys.map((k) => (
+            <li key={k.id}>
+              <strong>{k.name}</strong> <code>{k.prefix}…</code>{' '}
+              {k.revokedAt ? (
+                <em>revoked</em>
+              ) : (
+                <form action={revokeKeyAction} style={{ display: 'inline' }}>
+                  <input type="hidden" name="keyId" value={k.id} />
+                  <button>Revoke</button>
+                </form>
+              )}
+              <div>
+                POST <code>{`${base}/api/v1/alerts/<your key>`}</code>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </main>
+  );
+}
+```
+
+The created key's plaintext is returned by `createKeyAction` for the page to surface once; if displaying it needs client state, wrap the form in a small client component that renders the returned `plain` value in a dismissible box. Never persist or re-display it.
+
+- [ ] **Step 6: Verify by hand**
+
+Run: `npm run dev`, sign up, open `/dashboard/settings`, create a key, fire the curl command from Task 10 Step 7 against it.
+Expected: `{"ok":true,...}`; the key is shown once; revoking it makes the same curl return `401`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add settings page for overlay URL and ingest key management"
+```
+
+---
+
+## Task 13: Dashboard editor, preview, test fire, and manual send
+
+**Files:**
+- Create: `src/app/dashboard/page.tsx`, `src/app/dashboard/Editor.tsx`, `src/app/dashboard/actions.ts`, `src/app/dashboard/layout.tsx`
+- Test: `tests/dashboardActions.test.ts`
+
+**Interfaces:**
+- Consumes: `requireUserId`, `effectiveConfig`, `sendAlert`, `BUILT_IN`, `prisma`.
+- Produces:
+  - `saveConfigFor(userId: string, eventTypeKey: string, patch: ConfigPatch): Promise<{ ok: true }>` where `ConfigPatch = Partial<{ enabled: boolean; template: string; titleTemplate: string | null; style: Style; durationMs: number; imageUrl: string | null; soundUrl: string | null; soundVolume: number; minAmount: number | null; locale: string }>`
+  - `sendFromDashboard(userId: string, body: unknown, source: 'dashboard' | 'test')` — thin wrapper over `sendAlert`.
+  - `sampleValues(eventTypeKey: string): Record<string, string | number>` — the values test fire uses.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/dashboardActions.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { sampleValues, saveConfigFor, sendFromDashboard } from '@/app/dashboard/actions';
+import { effectiveConfig } from '@/lib/sendAlert';
+import { __reset, subscribe } from '@/lib/hub';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(async () => {
+  __reset();
+  await resetDb();
+});
+
+test('saving creates the config row on first save and updates it after', async () => {
+  const { user } = await makeUser();
+  await saveConfigFor(user.id, 'donation', { template: 'v1 {name}' });
+  expect(await prisma.alertConfig.count({ where: { userId: user.id } })).toBe(1);
+
+  await saveConfigFor(user.id, 'donation', { template: 'v2 {name}' });
+  expect(await prisma.alertConfig.count({ where: { userId: user.id } })).toBe(1);
+  expect((await effectiveConfig(user.id, 'donation')).render.template).toBe('v2 {name}');
+});
+
+test('a partial save leaves other fields alone', async () => {
+  const { user } = await makeUser();
+  await saveConfigFor(user.id, 'donation', { template: 'custom {name}', durationMs: 8000 });
+  await saveConfigFor(user.id, 'donation', { enabled: false });
+
+  const c = await effectiveConfig(user.id, 'donation');
+  expect(c.render.template).toBe('custom {name}');
+  expect(c.render.durationMs).toBe(8000);
+  expect(c.enabled).toBe(false);
+});
+
+test('an unsaved type reports built-in defaults', async () => {
+  const { user } = await makeUser();
+  const c = await effectiveConfig(user.id, 'follow');
+  expect(c.render.template).toBe('{name} just followed!');
+  expect(c.enabled).toBe(true);
+});
+
+test('saved config is scoped to its own user', async () => {
+  const a = await makeUser();
+  const b = await makeUser();
+  await saveConfigFor(a.user.id, 'donation', { template: 'A only {name}' });
+  expect((await effectiveConfig(b.user.id, 'donation')).render.template).toBe('{name} donated {amount}!');
+});
+
+test('sample values satisfy every required field of every type', async () => {
+  const { user } = await makeUser();
+  for (const type of ['donation', 'follow', 'sub', 'raid']) {
+    const r = await sendFromDashboard(user.id, { type, ...sampleValues(type) }, 'test');
+    expect(r.status, type).toBe(200);
+  }
+});
+
+test('test fire travels the real pipeline and logs source test', async () => {
+  const { user } = await makeUser();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  await sendFromDashboard(user.id, { type: 'donation', ...sampleValues('donation') }, 'test');
+  expect(frames).toHaveLength(1);
+  expect((await prisma.alertLog.findFirst())?.source).toBe('test');
+});
+
+test('a manual send logs source dashboard and is validated the same way', async () => {
+  const { user } = await makeUser();
+  const ok = await sendFromDashboard(user.id, { type: 'follow', name: 'bob' }, 'dashboard');
+  expect(ok.status).toBe(200);
+  expect((await prisma.alertLog.findFirst())?.source).toBe('dashboard');
+
+  const bad = await sendFromDashboard(user.id, { type: 'donation', name: 'bob' }, 'dashboard');
+  expect(bad.status).toBe(400);
+});
+
+test('test fire still fires while the type is disabled for live traffic', async () => {
+  const { user } = await makeUser();
+  await saveConfigFor(user.id, 'donation', { enabled: false });
+  const r = await sendFromDashboard(user.id, { type: 'donation', ...sampleValues('donation') }, 'test');
+  expect(r.status).toBe(202);
+  expect((r.body as { skipped: string }).skipped).toBe('disabled');
+});
+```
+
+The last test pins a real decision: test fire does **not** bypass the disabled check, so "why doesn't my test fire show" has the same answer as "why doesn't my alert show".
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/dashboardActions.test.ts`
+Expected: FAIL — cannot resolve the actions module.
+
+- [ ] **Step 3: Implement the dashboard actions**
+
+`src/app/dashboard/actions.ts`:
+
+```ts
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { requireUserId } from '@/auth';
+import prisma from '@/lib/db';
+import { BUILT_IN, type Style } from '@/lib/eventTypes';
+import { sendAlert, type Source } from '@/lib/sendAlert';
+
+export type ConfigPatch = Partial<{
+  enabled: boolean;
+  template: string;
+  titleTemplate: string | null;
+  style: Style;
+  durationMs: number;
+  imageUrl: string | null;
+  soundUrl: string | null;
+  soundVolume: number;
+  minAmount: number | null;
+  locale: string;
+}>;
+
+export async function saveConfigFor(userId: string, eventTypeKey: string, patch: ConfigPatch) {
+  const t = BUILT_IN[eventTypeKey];
+  if (!t) throw new Error('unknown event type');
+  await prisma.alertConfig.upsert({
+    where: { userId_eventTypeKey: { userId, eventTypeKey } },
+    update: patch,
+    create: {
+      userId,
+      eventTypeKey,
+      template: t.defaults.template,
+      titleTemplate: t.defaults.titleTemplate,
+      style: t.defaults.style,
+      durationMs: t.defaults.durationMs,
+      ...patch,
+    },
+  });
+  return { ok: true as const };
+}
+
+export function sampleValues(eventTypeKey: string): Record<string, string | number> {
+  const samples: Record<string, string | number> = {
+    name: 'TestViewer',
+    amount: 500,
+    currency: 'USD',
+    message: 'this is a test alert',
+    months: 3,
+    tier: '1',
+    viewers: 42,
+  };
+  const out: Record<string, string | number> = {};
+  for (const f of BUILT_IN[eventTypeKey].fields) {
+    if (samples[f.name] !== undefined) out[f.name] = samples[f.name];
+  }
+  return out;
+}
+
+export async function sendFromDashboard(userId: string, body: unknown, source: Source) {
+  return sendAlert(userId, body, source);
+}
+
+// Form entrances.
+
+export async function saveConfigAction(eventTypeKey: string, patch: ConfigPatch) {
+  const userId = await requireUserId();
+  await saveConfigFor(userId, eventTypeKey, patch);
+  revalidatePath('/dashboard');
+  return { ok: true as const };
+}
+
+export async function testFireAction(eventTypeKey: string) {
+  const userId = await requireUserId();
+  return sendFromDashboard(userId, { type: eventTypeKey, ...sampleValues(eventTypeKey) }, 'test');
+}
+
+export async function manualSendAction(form: FormData) {
+  const userId = await requireUserId();
+  const body: Record<string, unknown> = {};
+  for (const [k, v] of form.entries()) if (typeof v === 'string' && v) body[k] = v;
+  return sendFromDashboard(userId, body, 'dashboard');
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/dashboardActions.test.ts`
+Expected: PASS (8 tests).
+
+- [ ] **Step 5: Build the dashboard page and editor**
+
+`src/app/dashboard/layout.tsx`:
+
+```tsx
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <nav style={{ display: 'flex', gap: 16, padding: 16, borderBottom: '1px solid #ddd' }}>
+        <a href="/dashboard">Alerts</a>
+        <a href="/dashboard/settings">Settings</a>
+      </nav>
+      {children}
+    </>
+  );
+}
+```
+
+`src/app/dashboard/page.tsx`:
+
+```tsx
+import { requireUserId } from '@/auth';
+import prisma from '@/lib/db';
+import { BUILT_IN, EVENT_TYPE_KEYS } from '@/lib/eventTypes';
+import { effectiveConfig } from '@/lib/sendAlert';
+import Editor from './Editor';
+
+export default async function Dashboard() {
+  const userId = await requireUserId();
+  const overlay = await prisma.overlay.findFirst({ where: { userId } });
+  const types = await Promise.all(
+    EVENT_TYPE_KEYS.map(async (key) => ({
+      key,
+      label: BUILT_IN[key].label,
+      fields: BUILT_IN[key].fields,
+      config: await effectiveConfig(userId, key),
+    }))
+  );
+  return <Editor types={types} overlayToken={overlay!.token} />;
+}
+```
+
+`src/app/dashboard/Editor.tsx` — a client component holding:
+
+```tsx
+'use client';
+// Structure (fill in the controls as plain inputs bound to local state):
+//
+// - Left column: one button per type, each with an "enabled" checkbox that calls
+//   saveConfigAction(key, { enabled }).
+// - Right column, for the selected type:
+//     * variable chips — BUILT_IN[key].fields.map(f => `{${f.name}}`), click to
+//       append to the focused template input
+//     * inputs: template, titleTemplate, style.accent/bg/fg/font/size/pos/width/
+//       radius/anim, durationMs, imageUrl, soundUrl, soundVolume, minAmount, locale
+//     * "Save" -> saveConfigAction(key, patch)
+//     * "Test fire" -> testFireAction(key); show the returned status/skipped so a
+//       202 explains itself
+//     * manual send form generated from fields:
+//         fields.map(f => <input name={f.name} type={f.type === 'number' ? 'number' : 'text'}
+//                                required={f.required} />)
+//       plus <input type="hidden" name="type" value={key} />, action={manualSendAction}
+// - Preview: <iframe src={`/overlay/${overlayToken}`} />, 16:9, dark checkerboard
+//   behind it. On every edit, post the locally-rendered preview alert:
+//     iframeRef.current?.contentWindow?.postMessage(
+//       { kind: 'preview-alert', alert }, window.location.origin);
+//   Build `alert` by calling the same shape renderAlert produces, using
+//   sampleValues for the type. Targeting window.location.origin (never '*') keeps
+//   the preview channel same-origin.
+```
+
+The preview iframe is the real overlay route, so the preview cannot drift from what streams. Because the iframe is same-origin, `postMessage` reaches the overlay's existing `message` listener from Task 10.
+
+- [ ] **Step 6: Verify the loop by hand**
+
+Run: `npm run dev`. On `/dashboard`: change the donation template and accent color, save, hit Test fire, and watch both the preview iframe and the real OBS Browser Source.
+Expected: both show the new wording and color with no overlay reload. Send a manual `follow` with a `name` of `<b>x</b>` and confirm it renders as literal text.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add dashboard editor with live preview, test fire, and manual send"
+```
+
+---
+
+## Task 14: Retention, deployment, docs, and prototype removal
+
+**Files:**
+- Create: `src/lib/retention.ts`, `src/instrumentation.ts`, `Dockerfile`, `deploy/nginx.conf`
+- Modify: `README.md`
+- Delete: `server.js`, `overlay.html`, `test.js` (or the `.legacy/` copies from Task 1)
+- Test: `tests/retention.test.ts`
+
+**Interfaces:**
+- Consumes: `prisma`.
+- Produces: `pruneAlertLogs(days?: number): Promise<number>` — returns how many rows it deleted.
+
+- [ ] **Step 1: Write the failing retention tests**
+
+`tests/retention.test.ts`:
+
+```ts
+import { beforeEach, expect, test } from 'vitest';
+import prisma from '@/lib/db';
+import { pruneAlertLogs } from '@/lib/retention';
+import { makeUser, resetDb } from './helpers/db';
+
+beforeEach(resetDb);
+
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+test('deletes logs older than the window and keeps the rest', async () => {
+  const { user } = await makeUser();
+  for (const [age, text] of [[40, 'old'], [31, 'stale'], [29, 'recent'], [0, 'now']] as const) {
+    await prisma.alertLog.create({
+      data: {
+        userId: user.id,
+        eventTypeKey: 'follow',
+        payload: {},
+        renderedText: text,
+        source: 'api',
+        createdAt: daysAgo(age),
+      },
+    });
+  }
+
+  expect(await pruneAlertLogs(30)).toBe(2);
+  const left = await prisma.alertLog.findMany({ select: { renderedText: true } });
+  expect(left.map((r) => r.renderedText).sort()).toEqual(['now', 'recent']);
+});
+
+test('pruning an empty table deletes nothing', async () => {
+  expect(await pruneAlertLogs(30)).toBe(0);
+});
+
+test('defaults to a 30 day window', async () => {
+  const { user } = await makeUser();
+  await prisma.alertLog.create({
+    data: {
+      userId: user.id,
+      eventTypeKey: 'follow',
+      payload: {},
+      renderedText: 'old',
+      source: 'api',
+      createdAt: daysAgo(31),
+    },
+  });
+  expect(await pruneAlertLogs()).toBe(1);
+});
+```
+
+- [ ] **Step 2: Run them to make sure they fail**
+
+Run: `npm test -- tests/retention.test.ts`
+Expected: FAIL — cannot resolve `@/lib/retention`.
+
+- [ ] **Step 3: Implement retention**
+
+`src/lib/retention.ts`:
+
+```ts
+import prisma from './db';
+
+export async function pruneAlertLogs(days = 30): Promise<number> {
+  const cutoff = new Date(Date.now() - days * 86_400_000);
+  const { count } = await prisma.alertLog.deleteMany({ where: { createdAt: { lt: cutoff } } });
+  return count;
+}
+```
+
+`src/instrumentation.ts`:
+
+```ts
+// ponytail: a daily timer inside the app process rather than an external cron —
+// the app is already a long-running single instance, so there is nothing to
+// coordinate. Move to a real scheduler if it ever runs more than one instance.
+export async function register() {
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  const { pruneAlertLogs } = await import('./lib/retention');
+  const run = () =>
+    pruneAlertLogs()
+      .then((n) => n && console.log(`pruned ${n} alert logs`))
+      .catch((e) => console.error('prune failed', e));
+  setTimeout(run, 60_000).unref();
+  setInterval(run, 86_400_000).unref();
+}
+```
+
+- [ ] **Step 4: Run the tests and make sure they pass**
+
+Run: `npm test -- tests/retention.test.ts`
+Expected: PASS (3 tests).
+
+- [ ] **Step 5: Add the deployment files**
+
+`Dockerfile`:
+
+```dockerfile
+FROM node:22-slim AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate && npm run build
+
+FROM node:22-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app ./
+EXPOSE 3000
+CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]
+```
+
+`deploy/nginx.conf`:
+
+```nginx
+# The ingest key travels in the URL path, so this route's URI must never be logged.
+location /api/v1/alerts/ {
+  access_log off;
+  proxy_pass http://127.0.0.1:3000;
+  proxy_set_header Host $host;
+}
+
+# SSE: no buffering, no timeout.
+location /api/overlay/ {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_http_version 1.1;
+  proxy_set_header Connection '';
+  proxy_buffering off;
+  proxy_cache off;
+  proxy_read_timeout 24h;
+}
+
+location / {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_set_header Host $host;
+}
+```
+
+- [ ] **Step 6: Switch from db push to a real migration**
+
+Run: `npx prisma migrate dev --name init`
+Expected: a `prisma/migrations/*/migration.sql` file, which the Dockerfile's `migrate deploy` applies in production.
+
+- [ ] **Step 7: Rewrite the README and delete the prototype**
+
+`README.md` must cover: what the platform is; local setup (`docker compose up -d`, `.env`, `npm run db:push`, `npm run db:seed`, `npm run dev`); the OBS Browser Source steps (1920×1080, "Control audio via OBS" on, "Shutdown source when not visible" off — carried over verbatim from the prototype README, which had these right); the API contract table from the spec, with a curl example and an n8n HTTP-node example; the four event types and their fields; and a deployment section pointing at `Dockerfile` and `deploy/nginx.conf`, stating plainly that the app must run as a single long-lived Node process and that the alert route's URI must not be logged.
+
+```bash
+git rm -f server.js overlay.html test.js 2>/dev/null || rm -rf .legacy
+```
+
+- [ ] **Step 8: Run the whole suite and build**
+
+Run: `npm test && npm run build`
+Expected: every test passes; the build succeeds.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add log retention, Docker/nginx deploy config, and platform README"
+```
+
+---
+
+## Self-Review
+
+**Spec coverage:**
+
+| Spec requirement | Task |
+|---|---|
+| Email + password auth, sessions | 11 |
+| `POST /api/v1/alerts/<ingest_key>`, bearer alternative | 8 |
+| Multiple named revocable keys | 7, 12 |
+| Four built-in global event types | 2 |
+| Template + title + style tokens + duration + image + sound + `minAmount` | 2, 4, 6, 13 |
+| Overlay page + SSE + serial queue + cap 50 | 9, 10 |
+| Dashboard editor, live preview, test fire, manual send | 13 |
+| Overlay URL, token rotation, key management | 12 |
+| `AlertLog` with raw payload + rendered text + source | 6 |
+| One core function, three entrances | 6, 8, 13 |
+| Server renders, overlay displays | 4, 10 |
+| Output is data, never markup | 10 (`textContent` only), 4 + 6 tests |
+| Two independent secrets, both rotatable | 7, 9, 12 |
+| One schema, two validators | 3, 13 |
+| Status contract 200/202/400/401/413/429 | 6, 8 |
+| argon2id passwords, sha256 keys | 7, 11 |
+| Rate limit 60/min + `Retry-After` | 7, 8 |
+| Body cap 64KB | 8 |
+| Duration clamp 100–30000 | 4 |
+| `AlertLog` 30-day retention | 14 |
+| Log hygiene (prefix only, no URI logging) | 8, 14 |
+| Single-instance ceiling marked in code | 5, 7, 14 |
+| Deployment: Docker, proxy, `proxy_buffering off` | 14 |
+| Prototype code ported and removed | 5, 10, 14 |
+| Success criteria 1–5 | 1: 12 Step 6 · 2: 13 Step 6 · 3: 6 + 10 tests · 4: 6, 8, 9, 12, 13 tests · 5: 10 test |
+
+**Placeholder scan:** No TBDs. The one prose-only implementation is `Editor.tsx` (Task 13 Step 5), specified as a structure comment with exact action names, prop shapes, and the `postMessage` call rather than full JSX — deliberate for a layout-heavy component whose logic (queue, actions, rendering) is tested elsewhere. Every other code step carries runnable code.
+
+**Type consistency:** `AlertPayload` (Task 4) is what `publish` carries (5), what `createQueue`/`show` consume (10), and what the preview posts (13). `RenderConfig` (4) is what `effectiveConfig().render` returns (6). `Field`/`Style` (2) flow into `validatePayload` (3), `renderAlert` (4), and the generated forms (13). `SendResult` (6) is what routes and dashboard actions return (8, 13). `resolveKey` returns `{ userId, keyId, prefix }` (7), and `apiAlert` uses exactly those three (8). `newOverlayToken` is defined once (11) and reused by rotation (12).

@@ -9,6 +9,12 @@ import type { NextConfig } from "next";
 const OVERLAY_FRAME_POLICY = "frame-ancestors 'self'";
 
 const nextConfig: NextConfig = {
+  // Trace only the files the server actually imports into `.next/standalone`,
+  // instead of shipping the whole 754MB node_modules. Cuts the image from
+  // ~1.5GB to a few hundred MB. The runtime stage copies standalone/ plus
+  // .next/static and public/, which tracing deliberately does not include.
+  output: 'standalone',
+
   async headers() {
     return [
       {

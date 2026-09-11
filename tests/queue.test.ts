@@ -1,5 +1,5 @@
-import { expect, test, vi } from 'vitest';
-import { createQueue } from '@/lib/queue';
+import { expect, test } from 'vitest';
+import { createPreviewSlot, createQueue } from '@/lib/queue';
 import type { AlertPayload } from '@/lib/render';
 
 const alert = (id: string) => ({ id, text: id }) as AlertPayload;
@@ -82,4 +82,63 @@ test('ten alerts fired at once all play, none lost', () => {
   for (let i = 0; i < 10; i++) q.push(alert(`a${i}`));
   expect(played).toHaveLength(10);
   expect(q.dropped()).toBe(0);
+});
+
+test('preview slot: a new preview replaces a still-showing preview, leaving exactly one', () => {
+  const cancelled: string[] = [];
+  const showing: string[] = [];
+  const slot = createPreviewSlot({
+    play: (a, _done) => {
+      showing.push(a.id);
+      return () => cancelled.push(a.id); // never calls done: a cancel is not a finish
+    },
+  });
+
+  slot.show(alert('p1'));
+  slot.show(alert('p2')); // p1 is still "showing" (its cancel was never called by play)
+
+  expect(showing).toEqual(['p1', 'p2']); // both were rendered...
+  expect(cancelled).toEqual(['p1']); // ...but p1 was torn down, not left to finish on its own
+  expect(slot.active()).toBe(true); // exactly one (p2) remains current
+});
+
+test('preview slot: a preview that finishes naturally clears the slot without a replacement', () => {
+  let finish = () => {};
+  const slot = createPreviewSlot({
+    play: (_a, done) => {
+      finish = done;
+      return () => {};
+    },
+  });
+  slot.show(alert('p1'));
+  expect(slot.active()).toBe(true);
+  finish();
+  expect(slot.active()).toBe(false);
+});
+
+test('preview slot and the live queue are fully independent lanes', () => {
+  const livePlayed: string[] = [];
+  const previewPlayed: string[] = [];
+
+  // A live alert still queues serially behind another live alert...
+  let liveFinish = () => {};
+  const q = createQueue({ play: (a, done) => { livePlayed.push(a.id); liveFinish = done; } });
+  q.push(alert('live1'));
+  q.push(alert('live2'));
+  expect(livePlayed).toEqual(['live1']); // live2 waits, unaffected by any preview activity
+
+  // ...even while the preview lane is independently showing/replacing.
+  const slot = createPreviewSlot({
+    play: (a, _done) => {
+      previewPlayed.push(a.id);
+      return () => {};
+    },
+  });
+  slot.show(alert('preview1'));
+  slot.show(alert('preview2'));
+  expect(previewPlayed).toEqual(['preview1', 'preview2']);
+  expect(livePlayed).toEqual(['live1']); // still just 'live1' — previews never advance the live queue
+
+  liveFinish();
+  expect(livePlayed).toEqual(['live1', 'live2']);
 });

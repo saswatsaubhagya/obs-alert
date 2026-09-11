@@ -148,25 +148,37 @@ export default function Editor({
   // locally-rendered alert to the real overlay route running same-origin in the
   // iframe — the overlay's existing `message` listener (Task 10) plays it as if
   // it arrived over SSE, so the preview cannot drift from what actually streams.
+  //
+  // Debounced 200ms after the last edit: without this, every keystroke posted
+  // its own preview-alert, and OverlayClient's serial queue would play each one
+  // out in full (donation's default durationMs is 6000ms), so a 30-character
+  // edit queued minutes of stale previews cycling long after typing stopped.
+  // The 200ms delay collapses a burst of edits into a single post; the
+  // OverlayClient-side fix (a dedicated preview lane that replaces rather than
+  // queues) is what actually makes a *single* post safe to redisplay quickly —
+  // this debounce only cuts down how often that replace happens.
   useEffect(() => {
     if (!draft) return;
-    const values = samples[selectedKey] ?? {};
-    // Ruling 11: message never feeds text/title — it is not a template value.
-    const { message: _message, ...templateValues } = values;
-    const alert: AlertPayload = {
-      id: 'preview',
-      eventType: selectedKey,
-      title: draft.titleTemplate ? renderTemplatePreview(draft.titleTemplate, templateValues, draft.locale) : '',
-      text: renderTemplatePreview(draft.template, templateValues, draft.locale),
-      message: typeof values.message === 'string' ? values.message : '',
-      style: draft.style,
-      durationMs: Math.min(30000, Math.max(100, Math.round(Number(draft.durationMs) || 0))),
-      imageUrl: draft.imageUrl || null,
-      soundUrl: draft.soundUrl || null,
-      soundVolume: Number(draft.soundVolume),
-    };
-    const win = iframeRef.current?.contentWindow;
-    if (win) win.postMessage({ kind: 'preview-alert', alert }, window.location.origin);
+    const timer = setTimeout(() => {
+      const values = samples[selectedKey] ?? {};
+      // Ruling 11: message never feeds text/title — it is not a template value.
+      const { message: _message, ...templateValues } = values;
+      const alert: AlertPayload = {
+        id: 'preview',
+        eventType: selectedKey,
+        title: draft.titleTemplate ? renderTemplatePreview(draft.titleTemplate, templateValues, draft.locale) : '',
+        text: renderTemplatePreview(draft.template, templateValues, draft.locale),
+        message: typeof values.message === 'string' ? values.message : '',
+        style: draft.style,
+        durationMs: Math.min(30000, Math.max(100, Math.round(Number(draft.durationMs) || 0))),
+        imageUrl: draft.imageUrl || null,
+        soundUrl: draft.soundUrl || null,
+        soundVolume: Number(draft.soundVolume),
+      };
+      const win = iframeRef.current?.contentWindow;
+      if (win) win.postMessage({ kind: 'preview-alert', alert }, window.location.origin);
+    }, 200);
+    return () => clearTimeout(timer);
   }, [draft, selectedKey, samples, iframeReady]);
 
   function insertChip(name: string) {

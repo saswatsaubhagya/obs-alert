@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createQueue } from '@/lib/queue';
+import { createPreviewSlot, createQueue } from '@/lib/queue';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -21,9 +21,12 @@ export default function OverlayClient({ token }: { token: string }) {
     const root = rootRef.current;
     if (!root) return;
 
-    /** Builds the alert DOM. Every dynamic value is set with textContent or a
-     *  style property — never innerHTML — so donor text cannot become markup. */
-    const show = (a: AlertPayload, done: () => void) => {
+    /** Builds the alert DOM and starts it animating in. Every dynamic value is
+     *  set with textContent or a style property — never innerHTML — so donor
+     *  text cannot become markup. Shared by both the live queue and the
+     *  preview slot below, so a preview can never render through a different
+     *  path than a real alert. */
+    const mountCard = (a: AlertPayload) => {
       const style = a.style ?? {};
       const card = document.createElement('div');
       card.className = `card anim-${style.anim ?? 'fade'}`;
@@ -71,17 +74,55 @@ export default function OverlayClient({ token }: { token: string }) {
         void audio.play().catch(() => {}); // autoplay refusal must not stall the queue
       }
 
-      setTimeout(() => {
+      return { card, audio };
+    };
+
+    /** Schedules a mounted card's fade-out + removal after `durationMs`, then
+     *  calls `done`. Returns a cancel function that tears the card down
+     *  immediately (no fade, no `done`) — used by the preview lane to replace
+     *  a still-showing preview without waiting out its remaining time. */
+    const scheduleHide = (
+      card: HTMLDivElement,
+      audio: HTMLAudioElement | undefined,
+      durationMs: number,
+      done: () => void
+    ) => {
+      let removeTimer: ReturnType<typeof setTimeout> | undefined;
+      const hideTimer = setTimeout(() => {
         card.classList.remove('in');
-        setTimeout(() => {
+        removeTimer = setTimeout(() => {
           card.remove();
           audio?.pause();
           done();
         }, 400);
-      }, a.durationMs ?? 5000);
+      }, durationMs);
+
+      return () => {
+        clearTimeout(hideTimer);
+        clearTimeout(removeTimer);
+        card.remove();
+        audio?.pause();
+      };
     };
 
-    const queue = createQueue({ play: show });
+    // Live lane: strictly serial (createQueue) so real alerts never overlap.
+    const queue = createQueue({
+      play: (a, done) => {
+        const { card, audio } = mountCard(a);
+        scheduleHide(card, audio, a.durationMs ?? 5000, done);
+      },
+    });
+
+    // Preview lane: replaces whatever preview is currently showing instead of
+    // queuing behind it, so rapid edits in the dashboard don't backlog behind
+    // each other's full durationMs. Entirely separate from `queue` — a
+    // preview never advances or is advanced by the live lane.
+    const previewSlot = createPreviewSlot({
+      play: (a, done) => {
+        const { card, audio } = mountCard(a);
+        return scheduleHide(card, audio, a.durationMs ?? 5000, done);
+      },
+    });
 
     const es = new EventSource(`/api/overlay/${token}/events`);
     es.onmessage = (e) => {
@@ -95,13 +136,14 @@ export default function OverlayClient({ token }: { token: string }) {
     // Dashboard live preview: same-origin parent posts a rendered alert.
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin) return;
-      if (e.data?.kind === 'preview-alert') queue.push(e.data.alert as AlertPayload);
+      if (e.data?.kind === 'preview-alert') previewSlot.show(e.data.alert as AlertPayload);
     };
     window.addEventListener('message', onMessage);
 
     return () => {
       es.close();
       window.removeEventListener('message', onMessage);
+      previewSlot.clear();
     };
   }, [token]);
 

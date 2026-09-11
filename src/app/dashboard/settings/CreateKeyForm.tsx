@@ -21,22 +21,31 @@ export default function CreateKeyForm({ base }: { base: string }) {
         }}
         style={{ display: 'flex', gap: 8 }}
       >
-        <input name="name" placeholder="n8n prod" />
-        <button disabled={pending}>Create key</button>
+        <input name="name" placeholder="n8n prod" style={{ maxWidth: 260 }} />
+        <button type="submit" disabled={pending} style={{ whiteSpace: 'nowrap' }}>
+          {pending ? 'Creating…' : 'Create key'}
+        </button>
       </form>
 
       {plain && alertUrl && (
         <div
           role="alert"
-          style={{ border: '1px solid #444', padding: 12, borderRadius: 6, display: 'grid', gap: 8 }}
+          style={{
+            border: '1px solid var(--accent)',
+            background: 'var(--accent-soft)',
+            padding: 14,
+            borderRadius: 10,
+            display: 'grid',
+            gap: 10,
+          }}
         >
-          <p style={{ margin: 0 }}>Copy this now — the key is not shown again.</p>
+          <p style={{ margin: 0, fontWeight: 600 }}>Copy this now — the key is not shown again.</p>
           <div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>Alert URL (POST your JSON body here)</div>
+            <div className="muted" style={{ marginBottom: 4 }}>Alert URL (POST your JSON body here)</div>
             <code style={{ wordBreak: 'break-all' }}>{alertUrl}</code>
           </div>
           <div>
-            <div style={{ fontSize: 13, opacity: 0.75 }}>
+            <div className="muted" style={{ marginBottom: 4 }}>
               Key on its own, if your tool sends it as <code>Authorization: Bearer …</code>
             </div>
             <code style={{ wordBreak: 'break-all' }}>{plain}</code>

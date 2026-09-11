@@ -8,6 +8,7 @@ import Editor from './Editor';
 export default async function Dashboard() {
   const userId = await requireUserId();
   const overlay = await prisma.overlay.findFirst({ where: { userId } });
+  const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
   const types = await Promise.all(
     EVENT_TYPE_KEYS.map(async (key) => ({
       key,
@@ -20,5 +21,12 @@ export default async function Dashboard() {
   // A user without an overlay row (should not happen post-signup, but the
   // schema does not guarantee it) gets an explicit empty state from Editor
   // rather than a broken `/overlay/undefined` preview URL.
-  return <Editor types={types} overlayToken={overlay?.token ?? null} samples={samples} />;
+  return (
+    <Editor
+      types={types}
+      overlayToken={overlay?.token ?? null}
+      overlayUrl={overlay ? `${base}/overlay/${overlay.token}` : null}
+      samples={samples}
+    />
+  );
 }

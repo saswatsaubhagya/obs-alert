@@ -19,7 +19,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+    // suppressHydrationWarning: browser extensions (Kantu/UI.Vision stamps
+    // data-kantu) mutate <html> before hydration; only this element is exempted.
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );

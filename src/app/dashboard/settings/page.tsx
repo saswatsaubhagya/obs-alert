@@ -11,46 +11,77 @@ export default async function Settings() {
   const keys = await prisma.ingestKey.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
 
   return (
-    <main style={{ maxWidth: 760, margin: '4vh auto', display: 'grid', gap: 28 }}>
-      <section>
-        <h2>OBS Browser Source URL</h2>
+    <main className="editor" style={{ maxWidth: 820 }}>
+      <header className="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p className="muted">The overlay URL OBS reads from, and the keys your tools post alerts with.</p>
+        </div>
+      </header>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>OBS Browser Source URL</h2>
+        </div>
+        <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
         {overlay ? (
           <>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <code style={{ wordBreak: 'break-all' }}>{`${base}/overlay/${overlay.token}`}</code>
               <CopyButton value={`${base}/overlay/${overlay.token}`} label="Copy overlay URL" />
             </div>
-            <p>Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.</p>
+            <p className="muted">
+              Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.
+            </p>
             <form action={rotateTokenAction}>
               <button>Rotate overlay token</button>
             </form>
-            <p>Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+            <p className="muted">Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
           </>
         ) : (
-          <p>No overlay has been set up for this account yet — contact support to have one created.</p>
+          <p className="muted">No overlay has been set up for this account yet — contact support to have one created.</p>
         )}
+        </div>
       </section>
 
-      <section>
-        <h2>Ingest keys</h2>
+      <section className="card">
+        <div className="card-head">
+          <h2>Ingest keys</h2>
+        </div>
+        <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
         <CreateKeyForm base={base} />
-        <p>
+        <p className="muted">
           The full alert URL — the one with the key in it — is shown once, immediately after creation. Copy it
           into your workflow tool then; it cannot be shown again.
         </p>
-        <ul>
+        <ul style={{ display: 'grid', gap: 10, listStyle: 'none' }}>
           {keys.map((k) => (
-            <li key={k.id}>
-              <strong>{k.name}</strong> <code>{k.prefix}…</code>{' '}
-              {k.revokedAt ? (
-                <em>revoked</em>
-              ) : (
-                <form action={revokeKeyAction} style={{ display: 'inline' }}>
-                  <input type="hidden" name="keyId" value={k.id} />
-                  <button>Revoke</button>
-                </form>
-              )}
-              <div style={{ fontSize: 13, opacity: 0.75 }}>
+            <li
+              key={k.id}
+              style={{
+                display: 'grid',
+                gap: 6,
+                padding: 12,
+                border: '1px solid var(--line)',
+                borderRadius: 10,
+                background: 'var(--bg-input)',
+                opacity: k.revokedAt ? 0.55 : 1,
+              }}
+            >
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <strong>{k.name}</strong>
+                <code>{k.prefix}…</code>
+                <span style={{ flex: 1 }} />
+                {k.revokedAt ? (
+                  <em className="muted">revoked</em>
+                ) : (
+                  <form action={revokeKeyAction}>
+                    <input type="hidden" name="keyId" value={k.id} />
+                    <button>Revoke</button>
+                  </form>
+                )}
+              </div>
+              <div className="muted" style={{ fontSize: 12 }}>
                 POST to <code>{`${base}/api/v1/alerts/`}</code>
                 followed by this key — the full URL was shown when the key was created and is not recoverable
                 here, because only a hash of the key is stored.
@@ -58,6 +89,7 @@ export default async function Settings() {
             </li>
           ))}
         </ul>
+        </div>
       </section>
     </main>
   );

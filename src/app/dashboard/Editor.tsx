@@ -189,8 +189,8 @@ export default function Editor({
 
   async function onSave() {
     setSaveStatus((s) => ({ ...s, [selectedKey]: 'saving…' }));
-    await saveConfigAction(selectedKey, draftToPatch(draft));
-    setSaveStatus((s) => ({ ...s, [selectedKey]: 'saved' }));
+    const r = await saveConfigAction(selectedKey, draftToPatch(draft));
+    setSaveStatus((s) => ({ ...s, [selectedKey]: r.ok ? 'saved' : `not saved — ${r.error}` }));
   }
 
   async function onToggleEnabled(key: string, enabled: boolean) {

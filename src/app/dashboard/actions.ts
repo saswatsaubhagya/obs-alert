@@ -15,9 +15,13 @@ export type { ConfigPatch };
 
 export async function saveConfigAction(eventTypeKey: string, patch: ConfigPatch) {
   const userId = await requireUserId();
-  await saveConfigFor(userId, eventTypeKey, patch);
+  // saveConfigFor validates both arguments at runtime — they arrive over the
+  // wire and TypeScript guarantees nothing about them — and returns a
+  // 400-shaped result rather than throwing.
+  const result = await saveConfigFor(userId, eventTypeKey, patch);
+  if (!result.ok) return result;
   revalidatePath('/dashboard');
-  return { ok: true as const };
+  return result;
 }
 
 export async function testFireAction(eventTypeKey: string) {

@@ -1,0 +1,99 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M27TE9RP3K6DQFKFAZMVB6K1",
+  "session_id": "cd459fdb-4264-4388-bcaa-2b7299fc47fd",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-11T08:48:11.955017Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "public/sounds/blip.wav",
+    "public/sounds/chime.wav",
+    "public/sounds/coin.wav",
+    "public/sounds/ding.wav",
+    "public/sounds/fanfare.wav",
+    "public/sounds/whoosh.wav",
+    "scripts/gen_sounds.py",
+    "src/app/(auth)/login/page.tsx",
+    "src/app/(auth)/signup/page.tsx",
+    "src/app/dashboard/CopyButton.tsx",
+    "src/app/dashboard/Editor.tsx",
+    "src/app/dashboard/controls.tsx",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/page.tsx",
+    "src/app/dashboard/settings/CreateKeyForm.tsx",
+    "src/app/dashboard/settings/page.tsx",
+    "src/app/globals.css",
+    "src/app/layout.tsx",
+    "src/app/page.tsx",
+    "src/lib/sounds.ts",
+    "tests/sounds.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "8c0cf715e6a2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 48039,
+    "cache_read_tokens": 19001,
+    "output_tokens": 343,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-11T08:48:11.893088Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 293,
+    "total_committed": 0,
+    "total_lines_changed": 293,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1449,
+      "user_lines_removed": 293,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 7,
+        "scripts/gen_sounds.py": 142,
+        "src/app/(auth)/login/page.tsx": 17,
+        "src/app/(auth)/signup/page.tsx": 17,
+        "src/app/dashboard/CopyButton.tsx": 10,
+        "src/app/dashboard/Editor.tsx": 267,
+        "src/app/dashboard/controls.tsx": 179,
+        "src/app/dashboard/layout.tsx": 4,
+        "src/app/dashboard/page.tsx": 9,
+        "src/app/dashboard/settings/CreateKeyForm.tsx": 15,
+        "src/app/dashboard/settings/page.tsx": 53,
+        "src/app/globals.css": 675,
+        "src/app/layout.tsx": 3,
+        "src/app/page.tsx": 20,
+        "src/lib/sounds.ts": 15,
+        "tests/sounds.test.ts": 16
+      },
+      "user_removed_per_file": {
+        "src/app/(auth)/login/page.tsx": 7,
+        "src/app/(auth)/signup/page.tsx": 7,
+        "src/app/dashboard/CopyButton.tsx": 1,
+        "src/app/dashboard/Editor.tsx": 218,
+        "src/app/dashboard/layout.tsx": 1,
+        "src/app/dashboard/page.tsx": 1,
+        "src/app/dashboard/settings/CreateKeyForm.tsx": 6,
+        "src/app/dashboard/settings/page.tsx": 21,
+        "src/app/globals.css": 19,
+        "src/app/layout.tsx": 1,
+        "src/app/page.tsx": 11
+      }
+    }
+  ]
+}

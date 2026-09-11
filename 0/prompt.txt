@@ -1,0 +1,2063 @@
+You are generating a single git commit message.
+Return only the commit message text. Do not include a preamble, quotes, or code fences.
+
+Rules:
+- First line: imperative mood, <= 72 chars, no trailing period.
+- Optional body: blank line, then short wrapped bullet points or prose explaining WHY.
+- Capture the primary user-visible or developer-visible change.
+- Use only the staged changes below as context.
+- Do not include "Co-authored-by" or other git trailers.
+
+Branch: master
+
+Staged files:
+A	public/sounds/blip.wav
+A	public/sounds/chime.wav
+A	public/sounds/coin.wav
+A	public/sounds/ding.wav
+A	public/sounds/fanfare.wav
+A	public/sounds/whoosh.wav
+A	scripts/gen_sounds.py
+M	src/app/(auth)/login/page.tsx
+M	src/app/(auth)/signup/page.tsx
+M	src/app/dashboard/CopyButton.tsx
+M	src/app/dashboard/Editor.tsx
+A	src/app/dashboard/controls.tsx
+M	src/app/dashboard/layout.tsx
+M	src/app/dashboard/page.tsx
+M	src/app/dashboard/settings/CreateKeyForm.tsx
+M	src/app/dashboard/settings/page.tsx
+M	src/app/globals.css
+M	src/app/layout.tsx
+M	src/app/page.tsx
+A	src/lib/sounds.ts
+A	tests/sounds.test.ts
+
+Staged patch:
+```diff
+diff --git a/public/sounds/blip.wav b/public/sounds/blip.wav
+new file mode 100644
+index 0000000..0f924b0
+Binary files /dev/null and b/public/sounds/blip.wav differ
+diff --git a/public/sounds/chime.wav b/public/sounds/chime.wav
+new file mode 100644
+index 0000000..8856a85
+Binary files /dev/null and b/public/sounds/chime.wav differ
+diff --git a/public/sounds/coin.wav b/public/sounds/coin.wav
+new file mode 100644
+index 0000000..1f61f3c
+Binary files /dev/null and b/public/sounds/coin.wav differ
+diff --git a/public/sounds/ding.wav b/public/sounds/ding.wav
+new file mode 100644
+index 0000000..3a1b5f2
+Binary files /dev/null and b/public/sounds/ding.wav differ
+diff --git a/public/sounds/fanfare.wav b/public/sounds/fanfare.wav
+new file mode 100644
+index 0000000..9c19b19
+Binary files /dev/null and b/public/sounds/fanfare.wav differ
+diff --git a/public/sounds/whoosh.wav b/public/sounds/whoosh.wav
+new file mode 100644
+index 0000000..8b29ef1
+Binary files /dev/null and b/public/sounds/whoosh.wav differ
+diff --git a/scripts/gen_sounds.py b/scripts/gen_sounds.py
+new file mode 100644
+index 0000000..d118913
+--- /dev/null
++++ b/scripts/gen_sounds.py
+@@ -0,0 +1,142 @@
++#!/usr/bin/env python3
++"""Renders the built-in alert sounds into public/sounds/.
++
++Synthesised rather than sampled so the repo carries no third-party audio and
++no licence to track. Run it after editing a voice; the WAVs are committed, so
++this is not part of the build.
++
++    python3 scripts/gen_sounds.py
++
++Keep the file names in step with BUILT_IN_SOUNDS in src/lib/sounds.ts —
++tests/sounds.test.ts fails if one goes missing.
++"""
++
++import math
++import random
++import struct
++import wave
++from pathlib import Path
++
++RATE = 44100
++OUT = Path(__file__).resolve().parent.parent / 'public' / 'sounds'
++
++
++def sine(t, f):
++    return math.sin(2 * math.pi * f * t)
++
++
++def square(t, f):
++    return 1.0 if (t * f) % 1.0 < 0.5 else -1.0
++
++
++def saw(t, f):
++    return 2.0 * ((t * f) % 1.0) - 1.0
++
++
++def render(dur, fn):
++    """fn(t) -> sample in roughly [-1, 1], sampled over `dur` seconds."""
++    return [fn(i / RATE) for i in range(int(dur * RATE))]
++
++
++def decay(t, tau):
++    return math.exp(-t / tau)
++
++
++def bell(t, f, tau):
++    """A struck-metal partial stack: the odd ratios are what stop it sounding
++    like a plain sine beep."""
++    return (
++        sine(t, f) * decay(t, tau)
++        + 0.5 * sine(t, f * 2.0) * decay(t, tau * 0.6)
++        + 0.25 * sine(t, f * 2.76) * decay(t, tau * 0.35)
++        + 0.12 * sine(t, f * 5.4) * decay(t, tau * 0.2)
++    )
++
++
++def note(t, start, f, tau, wave_fn=sine):
++    """One voice in a sequence: silent before `start`, decaying after it."""
++    if t < start:
++        return 0.0
++    u = t - start
++    return wave_fn(u, f) * decay(u, tau)
++
++
++def chime(t):
++    return 0.55 * (bell(t, 880, 0.55) + 0.6 * bell(t, 1320, 0.4))
++
++
++def ding(t):
++    return 0.8 * bell(t, 1568, 0.28)
++
++
++def coin(t):
++    # The arcade two-step: a short grace note into a longer held one.
++    grace, hold = 0.055, 0.055
++    f = 988 if t < grace else 1319
++    env = 1.0 if t < grace else decay(t - hold, 0.16)
++    return 0.32 * square(t, f) * env
++
++
++def blip(t):
++    f = 660 + 660 * (t / 0.12)  # rising sweep
++    return 0.3 * square(t, f) * decay(t, 0.05)
++
++
++def whoosh(t, _rng=random.Random(7), _lp=[0.0]):
++    # Band-limited noise with a swell: one-pole lowpass whose cutoff opens and
++    # closes over the sound, which is all a whoosh really is.
++    n = _rng.uniform(-1.0, 1.0)
++    k = 0.02 + 0.35 * math.sin(math.pi * min(t / 0.6, 1.0))
++    _lp[0] += k * (n - _lp[0])
++    swell = math.sin(math.pi * min(t / 0.6, 1.0)) ** 2
++    return 1.6 * _lp[0] * swell
++
++
++def fanfare(t):
++    # C5 - E5 - G5 arpeggio, sawtooth for brightness.
++    return 0.3 * (
++        note(t, 0.00, 523.25, 0.35, saw)
++        + note(t, 0.12, 659.25, 0.35, saw)
++        + note(t, 0.24, 783.99, 0.55, saw)
++    )
++
++
++SOUNDS = {
++    'chime.wav': (1.2, chime),
++    'ding.wav': (0.7, ding),
++    'coin.wav': (0.5, coin),
++    'blip.wav': (0.18, blip),
++    'whoosh.wav': (0.7, whoosh),
++    'fanfare.wav': (1.1, fanfare),
++}
++
++FADE = int(0.004 * RATE)  # 4ms edge fades: without them every clip starts and ends on a click
++
++
++def write(path, samples):
++    n = len(samples)
++    frames = bytearray()
++    for i, s in enumerate(samples):
++        if i < FADE:
++            s *= i / FADE
++        if i > n - FADE:
++            s *= (n - i) / FADE
++        s = math.tanh(s)  # soft clip, so a hot voice distorts gently instead of wrapping
++        frames += struct.pack('<h', int(max(-1.0, min(1.0, s)) * 32000))
++    with wave.open(str(path), 'wb') as w:
++        w.setnchannels(1)
++        w.setsampwidth(2)
++        w.setframerate(RATE)
++        w.writeframes(bytes(frames))
++
++
++def main():
++    OUT.mkdir(parents=True, exist_ok=True)
++    for name, (dur, fn) in SOUNDS.items():
++        path = OUT / name
++        write(path, render(dur, fn))
++        print(f'{path.relative_to(OUT.parent.parent)}  {path.stat().st_size // 1024}KB')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/src/app/(auth)/login/page.tsx b/src/app/(auth)/login/page.tsx
+index 253543c..8dc0403 100644
+--- a/src/app/(auth)/login/page.tsx
++++ b/src/app/(auth)/login/page.tsx
+@@ -6,13 +6,23 @@ import { loginAction } from '../actions';
+ export default function Login() {
+   const [state, action, pending] = useActionState(loginAction, null);
+   return (
+-    <form action={action} style={{ maxWidth: 320, margin: '10vh auto', display: 'grid', gap: 10 }}>
+-      <h1>Log in</h1>
+-      <input name="email" type="email" placeholder="you@example.com" required />
+-      <input name="password" type="password" placeholder="password" required minLength={8} />
+-      {state?.error && <p style={{ color: 'crimson' }}>{state.error}</p>}
+-      <button disabled={pending}>Log in</button>
+-      <a href="/signup">Create an account</a>
++    <form action={action} className="panel" style={{ width: 340, margin: '14vh auto', display: 'grid', gap: 14 }}>
++      <h1 style={{ fontSize: 22 }}>Log in</h1>
++      <label>
++        Email
++        <input name="email" type="email" placeholder="you@example.com" required />
++      </label>
++      <label>
++        Password
++        <input name="password" type="password" placeholder="••••••••" required minLength={8} />
++      </label>
++      {state?.error && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{state.error}</p>}
++      <button type="submit" disabled={pending}>
++        {pending ? 'Logging in…' : 'Log in'}
++      </button>
++      <a href="/signup" style={{ fontSize: 13, textAlign: 'center' }}>
++        Create an account
++      </a>
+     </form>
+   );
+ }
+diff --git a/src/app/(auth)/signup/page.tsx b/src/app/(auth)/signup/page.tsx
+index b715974..d6f1dcc 100644
+--- a/src/app/(auth)/signup/page.tsx
++++ b/src/app/(auth)/signup/page.tsx
+@@ -6,13 +6,23 @@ import { signupAction } from '../actions';
+ export default function Signup() {
+   const [state, action, pending] = useActionState(signupAction, null);
+   return (
+-    <form action={action} style={{ maxWidth: 320, margin: '10vh auto', display: 'grid', gap: 10 }}>
+-      <h1>Create account</h1>
+-      <input name="email" type="email" placeholder="you@example.com" required />
+-      <input name="password" type="password" placeholder="password (8+ chars)" required minLength={8} />
+-      {state?.error && <p style={{ color: 'crimson' }}>{state.error}</p>}
+-      <button disabled={pending}>Sign up</button>
+-      <a href="/login">I already have an account</a>
++    <form action={action} className="panel" style={{ width: 340, margin: '14vh auto', display: 'grid', gap: 14 }}>
++      <h1 style={{ fontSize: 22 }}>Create account</h1>
++      <label>
++        Email
++        <input name="email" type="email" placeholder="you@example.com" required />
++      </label>
++      <label>
++        Password
++        <input name="password" type="password" placeholder="8+ characters" required minLength={8} />
++      </label>
++      {state?.error && <p style={{ color: 'var(--danger)', fontSize: 13 }}>{state.error}</p>}
++      <button type="submit" disabled={pending}>
++        {pending ? 'Creating…' : 'Sign up'}
++      </button>
++      <a href="/login" style={{ fontSize: 13, textAlign: 'center' }}>
++        I already have an account
++      </a>
+     </form>
+   );
+ }
+diff --git a/src/app/dashboard/CopyButton.tsx b/src/app/dashboard/CopyButton.tsx
+index e87cabe..f5edc19 100644
+--- a/src/app/dashboard/CopyButton.tsx
++++ b/src/app/dashboard/CopyButton.tsx
+@@ -4,12 +4,21 @@ import { useState } from 'react';
+ 
+ /** One copy button for every ready-to-paste URL in the dashboard: the overlay
+  *  URL and the full alert URL shown when a key is created. */
+-export default function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
++export default function CopyButton({
++  value,
++  label = 'Copy',
++  className,
++}: {
++  value: string;
++  label?: string;
++  className?: string;
++}) {
+   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+ 
+   return (
+     <button
+       type="button"
++      className={className}
+       onClick={async () => {
+         try {
+           await navigator.clipboard.writeText(value);
+diff --git a/src/app/dashboard/Editor.tsx b/src/app/dashboard/Editor.tsx
+index b8cec88..f7c504a 100644
+--- a/src/app/dashboard/Editor.tsx
++++ b/src/app/dashboard/Editor.tsx
+@@ -1,18 +1,20 @@
+ 'use client';
+ 
+ import { useEffect, useRef, useState } from 'react';
+-import type { Field, Style } from '@/lib/eventTypes';
++import type { Field as FieldSpec, Style } from '@/lib/eventTypes';
+ import type { AlertPayload } from '@/lib/render';
+ // The one copy of the rendering contract, shared with src/lib/render.ts so the
+ // preview cannot drift from what actually streams. (src/lib/template.ts is
+ // `node:crypto`-free precisely so this client component can import it.)
+ import { clampDuration, renderTemplate, templateValues } from '@/lib/template';
+ import { manualSendAction, saveConfigAction, testFireAction, type ConfigPatch } from './actions';
++import { ColorField, Field, Slider, SoundField, Toggle } from './controls';
++import CopyButton from './CopyButton';
+ 
+ type TypeConfig = {
+   key: string;
+   label: string;
+-  fields: Field[];
++  fields: FieldSpec[];
+   config: {
+     enabled: boolean;
+     minAmount: number | null;
+@@ -92,10 +94,12 @@ function describeResult(r: { status: number; body: unknown }): string {
+ export default function Editor({
+   types,
+   overlayToken,
++  overlayUrl,
+   samples,
+ }: {
+   types: TypeConfig[];
+   overlayToken: string | null;
++  overlayUrl: string | null;
+   samples: Record<string, Record<string, string | number>>;
+ }) {
+   const [selectedKey, setSelectedKey] = useState(types[0]?.key);
+@@ -106,6 +110,8 @@ export default function Editor({
+   const [fireStatus, setFireStatus] = useState<Record<string, string>>({});
+   const [manualStatus, setManualStatus] = useState<string | null>(null);
+   const [iframeReady, setIframeReady] = useState(0);
++  const [replay, setReplay] = useState(0);
++  const [stageBg, setStageBg] = useState('');
+ 
+   const lastFocused = useRef<'template' | 'titleTemplate'>('template');
+   const templateRef = useRef<HTMLInputElement>(null);
+@@ -160,7 +166,7 @@ export default function Editor({
+       if (win) win.postMessage({ kind: 'preview-alert', alert }, window.location.origin);
+     }, 200);
+     return () => clearTimeout(timer);
+-  }, [draft, selectedKey, samples, iframeReady]);
++  }, [draft, selectedKey, samples, iframeReady, replay]);
+ 
+   function insertChip(name: string) {
+     const target = lastFocused.current;
+@@ -190,231 +196,274 @@ export default function Editor({
+   const chipFields = selected.fields.filter((f) => f.name !== 'message'); // Ruling 11
+ 
+   return (
+-    <main style={{ display: 'grid', gridTemplateColumns: '200px 1fr 1fr', gap: 24, padding: '4vh 24px' }}>
+-      <aside style={{ display: 'grid', gap: 8, alignContent: 'start' }}>
+-        {types.map((t) => (
+-          <div
+-            key={t.key}
+-            style={{
+-              border: t.key === selectedKey ? '2px solid #7c5cff' : '1px solid #ccc',
+-              borderRadius: 8,
+-              padding: 8,
+-              display: 'grid',
+-              gap: 4,
+-            }}
+-          >
+-            <button type="button" onClick={() => setSelectedKey(t.key)} style={{ textAlign: 'left' }}>
+-              {t.label}
+-            </button>
+-            <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+-              <input
+-                type="checkbox"
+-                checked={drafts[t.key]?.enabled ?? true}
+-                onChange={(e) => onToggleEnabled(t.key, e.target.checked)}
+-              />
+-              enabled
+-            </label>
+-          </div>
+-        ))}
+-      </aside>
+-
+-      <section style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
+-        <h2>{selected.label}</h2>
+-
++    <div className="editor">
++      <header className="page-head">
+         <div>
+-          <div style={{ fontSize: 13, marginBottom: 4 }}>Variables (click to insert into the focused field):</div>
+-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+-            {chipFields.map((f) => (
+-              <button type="button" key={f.name} onClick={() => insertChip(f.name)}>
+-                {`{${f.name}}`}
+-              </button>
+-            ))}
+-          </div>
+-          <p style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+-            The donor&apos;s message is never a template variable — it always renders as its own line below the
+-            alert text, not something you can weave into the wording.
++          <h1>Alert Box</h1>
++          <p className="muted">
++            Custom on-screen alerts to thank your viewers for following, subbing, tipping and more.
+           </p>
+         </div>
++        <div className="head-actions">
++          <button type="button" onClick={() => onTestFire(selectedKey)}>
++            Test {selected.label} ›
++          </button>
++        </div>
++      </header>
+ 
+-        <label>
+-          Template
+-          <input
+-            ref={templateRef}
+-            value={draft.template}
+-            onFocus={() => (lastFocused.current = 'template')}
+-            onChange={(e) => patchDraft({ template: e.target.value })}
+-            style={{ width: '100%' }}
+-          />
+-        </label>
++      {overlayUrl ? (
++        <div className="widget-url">
++          <CopyButton className="url-copy" value={overlayUrl} label="Click To Copy Widget URL" />
++          <a className="btn-primary btn-launch" href={overlayUrl} target="_blank" rel="noreferrer">
++            Launch
++          </a>
++        </div>
++      ) : null}
+ 
+-        <label>
+-          Title template
+-          <input
+-            ref={titleRef}
+-            value={draft.titleTemplate}
+-            onFocus={() => (lastFocused.current = 'titleTemplate')}
+-            onChange={(e) => patchDraft({ titleTemplate: e.target.value })}
+-            style={{ width: '100%' }}
+-          />
+-        </label>
++      <div className="editor-grid">
++        <aside className="side">
++          <h2>Alert types</h2>
++          {types.map((t) => (
++            <div key={t.key} className="side-item" data-selected={t.key === selectedKey}>
++              <button type="button" onClick={() => setSelectedKey(t.key)}>
++                {t.label}
++              </button>
++              <span
++                className="side-dot"
++                data-on={drafts[t.key]?.enabled ?? true}
++                title={drafts[t.key]?.enabled ? 'enabled' : 'disabled'}
++              />
++            </div>
++          ))}
++        </aside>
+ 
+-        <fieldset style={{ display: 'grid', gap: 8, gridTemplateColumns: '1fr 1fr' }}>
+-          <legend>Style</legend>
+-          <label>
+-            Accent
+-            <input value={draft.style.accent} onChange={(e) => patchStyle({ accent: e.target.value })} />
+-          </label>
+-          <label>
+-            Background
+-            <input value={draft.style.bg} onChange={(e) => patchStyle({ bg: e.target.value })} />
+-          </label>
+-          <label>
+-            Text colour
+-            <input value={draft.style.fg} onChange={(e) => patchStyle({ fg: e.target.value })} />
+-          </label>
+-          <label>
+-            Font
+-            <input value={draft.style.font} onChange={(e) => patchStyle({ font: e.target.value })} />
+-          </label>
+-          <label>
+-            Size
+-            <input
+-              type="number"
+-              value={draft.style.size}
+-              onChange={(e) => patchStyle({ size: Number(e.target.value) })}
+-            />
+-          </label>
+-          <label>
+-            Position
+-            <select value={draft.style.pos} onChange={(e) => patchStyle({ pos: e.target.value })}>
+-              {POSITIONS.map((p) => (
+-                <option key={p} value={p}>
+-                  {p}
+-                </option>
+-              ))}
+-            </select>
+-          </label>
+-          <label>
+-            Width
+-            <input
+-              type="number"
+-              value={draft.style.width}
+-              onChange={(e) => patchStyle({ width: Number(e.target.value) })}
+-            />
+-          </label>
+-          <label>
+-            Corner radius
+-            <input
+-              type="number"
+-              value={draft.style.radius}
+-              onChange={(e) => patchStyle({ radius: Number(e.target.value) })}
+-            />
+-          </label>
+-          <label>
+-            Animation
+-            <select value={draft.style.anim} onChange={(e) => patchStyle({ anim: e.target.value as Style['anim'] })}>
+-              {ANIMATIONS.map((a) => (
+-                <option key={a} value={a}>
+-                  {a}
+-                </option>
+-              ))}
+-            </select>
+-          </label>
+-        </fieldset>
++        <div className="col-main">
++          <section className="card">
++            <div className="card-head">
++              <h2>{selected.label}</h2>
++            </div>
++            <div className="card-body">
++              <Toggle
++                label="Enabled"
++                checked={draft.enabled}
++                onChange={(v) => onToggleEnabled(selectedKey, v)}
++              />
++              <Field label="Message template">
++                <input
++                  ref={templateRef}
++                  value={draft.template}
++                  onFocus={() => (lastFocused.current = 'template')}
++                  onChange={(e) => patchDraft({ template: e.target.value })}
++                />
++              </Field>
++              <Field label="Title template">
++                <input
++                  ref={titleRef}
++                  value={draft.titleTemplate}
++                  onFocus={() => (lastFocused.current = 'titleTemplate')}
++                  onChange={(e) => patchDraft({ titleTemplate: e.target.value })}
++                />
++              </Field>
++              <div className="chip-row">
++                {chipFields.map((f) => (
++                  <button type="button" className="chip" key={f.name} onClick={() => insertChip(f.name)}>
++                    {`{${f.name}}`}
++                  </button>
++                ))}
++              </div>
++              <p className="muted note">
++                Click a variable to insert it into the field you last edited. The donor&apos;s message is never
++                a template variable — it always renders as its own line below the alert text, not something you
++                can weave into the wording.
++              </p>
++            </div>
++          </section>
+ 
+-        <label>
+-          Duration (ms)
+-          <input
+-            type="number"
+-            value={draft.durationMs}
+-            onChange={(e) => patchDraft({ durationMs: Number(e.target.value) })}
+-          />
+-        </label>
+-        <label>
+-          Image URL
+-          <input value={draft.imageUrl} onChange={(e) => patchDraft({ imageUrl: e.target.value })} />
+-        </label>
+-        <label>
+-          Sound URL
+-          <input value={draft.soundUrl} onChange={(e) => patchDraft({ soundUrl: e.target.value })} />
+-        </label>
+-        <label>
+-          Sound volume (0–100)
+-          <input
+-            type="number"
+-            min={0}
+-            max={100}
+-            value={draft.soundVolume}
+-            onChange={(e) => patchDraft({ soundVolume: Number(e.target.value) })}
+-          />
+-        </label>
+-        <label>
+-          Minimum amount
+-          <input type="number" value={draft.minAmount} onChange={(e) => patchDraft({ minAmount: e.target.value })} />
+-        </label>
+-        <label>
+-          Locale
+-          <input value={draft.locale} onChange={(e) => patchDraft({ locale: e.target.value })} />
+-        </label>
++          <section className="card">
++            <div className="card-head">
++              <h2>Style</h2>
++            </div>
++            <div className="card-body">
++              <ColorField label="Accent" value={draft.style.accent} onChange={(v) => patchStyle({ accent: v })} />
++              <ColorField label="Background" value={draft.style.bg} onChange={(v) => patchStyle({ bg: v })} />
++              <ColorField label="Text colour" value={draft.style.fg} onChange={(v) => patchStyle({ fg: v })} />
++              <Field label="Font">
++                <input value={draft.style.font} onChange={(e) => patchStyle({ font: e.target.value })} />
++              </Field>
++              <Slider
++                label="Font size"
++                min={10}
++                max={96}
++                value={draft.style.size}
++                onChange={(v) => patchStyle({ size: v })}
++                format={(v) => `${v}px`}
++              />
++              <Slider
++                label="Width"
++                min={200}
++                max={1920}
++                step={10}
++                value={draft.style.width}
++                onChange={(v) => patchStyle({ width: v })}
++                format={(v) => `${v}px`}
++              />
++              <Slider
++                label="Corner radius"
++                min={0}
++                max={64}
++                value={draft.style.radius}
++                onChange={(v) => patchStyle({ radius: v })}
++                format={(v) => `${v}px`}
++              />
++              <Field label="Position">
++                <select value={draft.style.pos} onChange={(e) => patchStyle({ pos: e.target.value })}>
++                  {POSITIONS.map((p) => (
++                    <option key={p} value={p}>
++                      {p}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++              <Field label="Animation">
++                <select
++                  value={draft.style.anim}
++                  onChange={(e) => patchStyle({ anim: e.target.value as Style['anim'] })}
++                >
++                  {ANIMATIONS.map((a) => (
++                    <option key={a} value={a}>
++                      {a}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++            </div>
++          </section>
+ 
+-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+-          <button type="button" onClick={onSave}>
+-            Save
+-          </button>
+-          <span style={{ fontSize: 13 }}>{saveStatus[selectedKey]}</span>
+-          <button type="button" onClick={() => onTestFire(selectedKey)}>
+-            Test fire
+-          </button>
+-          <span style={{ fontSize: 13 }}>{fireStatus[selectedKey]}</span>
++          <section className="card">
++            <div className="card-head">
++              <h2>Playback</h2>
++            </div>
++            <div className="card-body">
++              <Slider
++                label="Alert duration"
++                min={100}
++                max={30000}
++                step={100}
++                value={draft.durationMs}
++                onChange={(v) => patchDraft({ durationMs: v })}
++                format={(v) => `${(v / 1000).toFixed(1)}s`}
++              />
++              <Slider
++                label="Sound volume"
++                min={0}
++                max={100}
++                value={draft.soundVolume}
++                onChange={(v) => patchDraft({ soundVolume: v })}
++                format={(v) => `${v}%`}
++              />
++              <Field label="Image URL">
++                <input
++                  value={draft.imageUrl}
++                  placeholder="https://…"
++                  onChange={(e) => patchDraft({ imageUrl: e.target.value })}
++                />
++              </Field>
++              <SoundField
++                label="Sound"
++                value={draft.soundUrl}
++                volume={draft.soundVolume}
++                onChange={(v) => patchDraft({ soundUrl: v })}
++              />
++              <Field label="Minimum amount">
++                <input
++                  type="number"
++                  value={draft.minAmount}
++                  placeholder="no minimum"
++                  onChange={(e) => patchDraft({ minAmount: e.target.value })}
++                />
++              </Field>
++              <Field label="Locale">
++                <input value={draft.locale} onChange={(e) => patchDraft({ locale: e.target.value })} />
++              </Field>
++            </div>
++          </section>
++
++          <section className="card">
++            <div className="card-head">
++              <h2>Manual send</h2>
++            </div>
++            <div className="card-body">
++              <form
++                action={async (form: FormData) => {
++                  const r = await manualSendAction(form);
++                  setManualStatus(describeResult(r));
++                }}
++              >
++                <input type="hidden" name="type" value={selectedKey} />
++                {selected.fields.map((f) => (
++                  <Field key={f.name} label={f.name + (f.required ? ' (required)' : '')}>
++                    <input name={f.name} type={f.type === 'number' ? 'number' : 'text'} required={f.required} />
++                  </Field>
++                ))}
++                <div className="preview-foot" style={{ padding: '14px 0 4px' }}>
++                  <button type="submit">Send</button>
++                  {manualStatus && <span className="status">{manualStatus}</span>}
++                </div>
++              </form>
++            </div>
++          </section>
+         </div>
+ 
+-        <fieldset style={{ display: 'grid', gap: 8 }}>
+-          <legend>Manual send</legend>
+-          <form
+-            action={async (form: FormData) => {
+-              const r = await manualSendAction(form);
+-              setManualStatus(describeResult(r));
+-            }}
+-            style={{ display: 'grid', gap: 8 }}
+-          >
+-            <input type="hidden" name="type" value={selectedKey} />
+-            {selected.fields.map((f) => (
+-              <label key={f.name}>
+-                {f.name}
+-                {f.required ? ' (required)' : ''}
+-                <input name={f.name} type={f.type === 'number' ? 'number' : 'text'} required={f.required} />
+-              </label>
+-            ))}
+-            <button type="submit">Send</button>
+-          </form>
+-          {manualStatus && <span style={{ fontSize: 13 }}>{manualStatus}</span>}
+-        </fieldset>
+-      </section>
++        <div className="col-preview">
++          <section className="card">
++            <div className="card-head">
++              <h2>Preview</h2>
++              <button type="button" onClick={() => setReplay((n) => n + 1)} disabled={!overlayToken}>
++                Replay
++              </button>
++            </div>
++            {overlayToken ? (
++              <>
++                <div className="preview-stage" style={stageBg ? { background: stageBg } : undefined}>
++                  <iframe
++                    ref={iframeRef}
++                    src={`/overlay/${overlayToken}`}
++                    onLoad={() => setIframeReady((n) => n + 1)}
++                    title="Overlay preview"
++                  />
++                </div>
++                <div className="preview-foot">
++                  <span className="muted">Stage background</span>
++                  <input
++                    type="color"
++                    className="swatch"
++                    aria-label="Preview stage background"
++                    value={stageBg || '#000000'}
++                    onChange={(e) => setStageBg(e.target.value)}
++                  />
++                  <button type="button" onClick={() => setStageBg('')} disabled={!stageBg}>
++                    Checkerboard
++                  </button>
++                </div>
++              </>
++            ) : (
++              <div className="card-body">
++                <p className="muted note">
++                  No overlay URL yet — set one up on the Settings page, then come back here to preview alerts.
++                </p>
++              </div>
++            )}
++          </section>
++        </div>
++      </div>
+ 
+-      <section>
+-        <h2>Preview</h2>
+-        {overlayToken ? (
+-          <div
+-            style={{
+-              aspectRatio: '16 / 9',
+-              width: '100%',
+-              background: 'repeating-conic-gradient(#222 0% 25%, #2c2c2c 0% 50%) 0 0 / 24px 24px',
+-              borderRadius: 8,
+-              overflow: 'hidden',
+-            }}
+-          >
+-            <iframe
+-              ref={iframeRef}
+-              src={`/overlay/${overlayToken}`}
+-              onLoad={() => setIframeReady((n) => n + 1)}
+-              style={{ width: '100%', height: '100%', border: 0 }}
+-              title="Overlay preview"
+-            />
+-          </div>
+-        ) : (
+-          <p>No overlay URL yet — set one up on the Settings page, then come back here to preview alerts.</p>
+-        )}
+-      </section>
+-    </main>
++      <div className="savebar">
++        <span className="status">{fireStatus[selectedKey]}</span>
++        <span className="status">{saveStatus[selectedKey]}</span>
++        <button type="button" className="btn-primary" onClick={onSave}>
++          Save Settings
++        </button>
++      </div>
++    </div>
+   );
+ }
+diff --git a/src/app/dashboard/controls.tsx b/src/app/dashboard/controls.tsx
+new file mode 100644
+index 0000000..e70296d
+--- /dev/null
++++ b/src/app/dashboard/controls.tsx
+@@ -0,0 +1,179 @@
++'use client';
++
++import { useState } from 'react';
++import { BUILT_IN_SOUNDS, isBuiltInSound } from '@/lib/sounds';
++
++/** The three form controls the editor repeats: a switch, a slider with a value
++ *  readout, and a colour text field with a native swatch beside it. Each one
++ *  renders the same label-left / control-right row (`.field`) so every setting
++ *  in the editor lines up on one column. */
++
++export function Toggle({
++  label,
++  checked,
++  onChange,
++}: {
++  label: string;
++  checked: boolean;
++  onChange: (v: boolean) => void;
++}) {
++  return (
++    <label className="field">
++      <span className="field-label">{label}</span>
++      <span className="switch">
++        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
++        <span className="switch-track" />
++      </span>
++    </label>
++  );
++}
++
++export function Slider({
++  label,
++  value,
++  onChange,
++  min,
++  max,
++  step = 1,
++  format = (v: number) => String(v),
++}: {
++  label: string;
++  value: number;
++  onChange: (v: number) => void;
++  min: number;
++  max: number;
++  step?: number;
++  format?: (v: number) => string;
++}) {
++  return (
++    <label className="field">
++      <span className="field-label">{label}</span>
++      <span className="slider">
++        <input
++          type="range"
++          min={min}
++          max={max}
++          step={step}
++          value={value}
++          onChange={(e) => onChange(Number(e.target.value))}
++        />
++        <span className="slider-value">{format(value)}</span>
++      </span>
++    </label>
++  );
++}
++
++/** Hex colours get a swatch; anything else (the default `bg` is
++ *  `rgba(12,12,16,0.86)`) keeps working through the text field, which stays the
++ *  source of truth — a native colour input cannot hold an alpha channel.
++ *  ponytail: swatch writes hex, text keeps alpha. */
++const HEX = /^#[0-9a-f]{6}$/i;
++
++export function ColorField({
++  label,
++  value,
++  onChange,
++}: {
++  label: string;
++  value: string;
++  onChange: (v: string) => void;
++}) {
++  return (
++    <label className="field">
++      <span className="field-label">{label}</span>
++      <span className="swatch-row">
++        <input value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
++        <input
++          type="color"
++          className="swatch"
++          aria-label={`${label} colour picker`}
++          value={HEX.test(value) ? value : '#000000'}
++          onChange={(e) => onChange(e.target.value)}
++        />
++      </span>
++    </label>
++  );
++}
++
++/** A plain row for the controls that stay native (text inputs, selects). */
++export function Field({ label, children }: { label: string; children: React.ReactNode }) {
++  return (
++    <label className="field">
++      <span className="field-label">{label}</span>
++      <span className="field-control">{children}</span>
++    </label>
++  );
++}
++
++/** Sound picker: the built-ins by name, or a custom URL, plus a preview that
++ *  plays at whatever volume the alert is configured for. An empty value means
++ *  "no sound", which is what the overlay already does with a null soundUrl. */
++export function SoundField({
++  label,
++  value,
++  onChange,
++  volume,
++}: {
++  label: string;
++  value: string;
++  onChange: (v: string) => void;
++  volume: number;
++}) {
++  const custom = value !== '' && !isBuiltInSound(value);
++  const [showCustom, setShowCustom] = useState(custom);
++
++  function play() {
++    if (!value) return;
++    const audio = new Audio(value);
++    audio.volume = Math.min(1, Math.max(0, volume / 100));
++    void audio.play().catch(() => {
++      /* autoplay refused, or the custom URL does not resolve — the preview is
++         not worth an error dialog; Test fire reports real delivery problems. */
++    });
++  }
++
++  return (
++    <>
++      <label className="field">
++        <span className="field-label">{label}</span>
++        <span className="sound-row">
++          <select
++            value={showCustom ? 'custom' : value}
++            onChange={(e) => {
++              const v = e.target.value;
++              if (v === 'custom') {
++                setShowCustom(true);
++                return;
++              }
++              setShowCustom(false);
++              onChange(v);
++            }}
++          >
++            <option value="">No sound</option>
++            {BUILT_IN_SOUNDS.map((s) => (
++              <option key={s.value} value={s.value}>
++                {s.label}
++              </option>
++            ))}
++            <option value="custom">Custom URL…</option>
++          </select>
++          <button type="button" onClick={play} disabled={!value} aria-label="Preview sound">
++            ▶
++          </button>
++        </span>
++      </label>
++      {showCustom && (
++        <label className="field">
++          <span className="field-label">Custom sound URL</span>
++          <span className="field-control">
++            <input
++              value={value}
++              placeholder="https://…"
++              onChange={(e) => onChange(e.target.value)}
++            />
++          </span>
++        </label>
++      )}
++    </>
++  );
++}
+diff --git a/src/app/dashboard/layout.tsx b/src/app/dashboard/layout.tsx
+index 624d1fd..bf215b1 100644
+--- a/src/app/dashboard/layout.tsx
++++ b/src/app/dashboard/layout.tsx
+@@ -1,7 +1,10 @@
+ export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+   return (
+     <>
+-      <nav style={{ display: 'flex', gap: 16, padding: 16, borderBottom: '1px solid #ddd' }}>
++      <nav className="nav">
++        <a href="/" className="brand">
++          OBS Alert
++        </a>
+         <a href="/dashboard">Alerts</a>
+         <a href="/dashboard/settings">Settings</a>
+       </nav>
+diff --git a/src/app/dashboard/page.tsx b/src/app/dashboard/page.tsx
+index ab11287..3613f16 100644
+--- a/src/app/dashboard/page.tsx
++++ b/src/app/dashboard/page.tsx
+@@ -8,6 +8,7 @@ import Editor from './Editor';
+ export default async function Dashboard() {
+   const userId = await requireUserId();
+   const overlay = await prisma.overlay.findFirst({ where: { userId } });
++  const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
+   const types = await Promise.all(
+     EVENT_TYPE_KEYS.map(async (key) => ({
+       key,
+@@ -20,5 +21,12 @@ export default async function Dashboard() {
+   // A user without an overlay row (should not happen post-signup, but the
+   // schema does not guarantee it) gets an explicit empty state from Editor
+   // rather than a broken `/overlay/undefined` preview URL.
+-  return <Editor types={types} overlayToken={overlay?.token ?? null} samples={samples} />;
++  return (
++    <Editor
++      types={types}
++      overlayToken={overlay?.token ?? null}
++      overlayUrl={overlay ? `${base}/overlay/${overlay.token}` : null}
++      samples={samples}
++    />
++  );
+ }
+diff --git a/src/app/dashboard/settings/CreateKeyForm.tsx b/src/app/dashboard/settings/CreateKeyForm.tsx
+index 4878b2c..35609c2 100644
+--- a/src/app/dashboard/settings/CreateKeyForm.tsx
++++ b/src/app/dashboard/settings/CreateKeyForm.tsx
+@@ -21,22 +21,31 @@ export default function CreateKeyForm({ base }: { base: string }) {
+         }}
+         style={{ display: 'flex', gap: 8 }}
+       >
+-        <input name="name" placeholder="n8n prod" />
+-        <button disabled={pending}>Create key</button>
++        <input name="name" placeholder="n8n prod" style={{ maxWidth: 260 }} />
++        <button type="submit" disabled={pending} style={{ whiteSpace: 'nowrap' }}>
++          {pending ? 'Creating…' : 'Create key'}
++        </button>
+       </form>
+ 
+       {plain && alertUrl && (
+         <div
+           role="alert"
+-          style={{ border: '1px solid #444', padding: 12, borderRadius: 6, display: 'grid', gap: 8 }}
++          style={{
++            border: '1px solid var(--accent)',
++            background: 'var(--accent-soft)',
++            padding: 14,
++            borderRadius: 10,
++            display: 'grid',
++            gap: 10,
++          }}
+         >
+-          <p style={{ margin: 0 }}>Copy this now — the key is not shown again.</p>
++          <p style={{ margin: 0, fontWeight: 600 }}>Copy this now — the key is not shown again.</p>
+           <div>
+-            <div style={{ fontSize: 13, opacity: 0.75 }}>Alert URL (POST your JSON body here)</div>
++            <div className="muted" style={{ marginBottom: 4 }}>Alert URL (POST your JSON body here)</div>
+             <code style={{ wordBreak: 'break-all' }}>{alertUrl}</code>
+           </div>
+           <div>
+-            <div style={{ fontSize: 13, opacity: 0.75 }}>
++            <div className="muted" style={{ marginBottom: 4 }}>
+               Key on its own, if your tool sends it as <code>Authorization: Bearer …</code>
+             </div>
+             <code style={{ wordBreak: 'break-all' }}>{plain}</code>
+diff --git a/src/app/dashboard/settings/page.tsx b/src/app/dashboard/settings/page.tsx
+index 3eb25da..d9c14fb 100644
+--- a/src/app/dashboard/settings/page.tsx
++++ b/src/app/dashboard/settings/page.tsx
+@@ -11,46 +11,77 @@ export default async function Settings() {
+   const keys = await prisma.ingestKey.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+ 
+   return (
+-    <main style={{ maxWidth: 760, margin: '4vh auto', display: 'grid', gap: 28 }}>
+-      <section>
+-        <h2>OBS Browser Source URL</h2>
++    <main className="editor" style={{ maxWidth: 820 }}>
++      <header className="page-head">
++        <div>
++          <h1>Settings</h1>
++          <p className="muted">The overlay URL OBS reads from, and the keys your tools post alerts with.</p>
++        </div>
++      </header>
++
++      <section className="card">
++        <div className="card-head">
++          <h2>OBS Browser Source URL</h2>
++        </div>
++        <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
+         {overlay ? (
+           <>
+             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+               <code style={{ wordBreak: 'break-all' }}>{`${base}/overlay/${overlay.token}`}</code>
+               <CopyButton value={`${base}/overlay/${overlay.token}`} label="Copy overlay URL" />
+             </div>
+-            <p>Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.</p>
++            <p className="muted">
++              Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.
++            </p>
+             <form action={rotateTokenAction}>
+               <button>Rotate overlay token</button>
+             </form>
+-            <p>Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
++            <p className="muted">Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+           </>
+         ) : (
+-          <p>No overlay has been set up for this account yet — contact support to have one created.</p>
++          <p className="muted">No overlay has been set up for this account yet — contact support to have one created.</p>
+         )}
++        </div>
+       </section>
+ 
+-      <section>
+-        <h2>Ingest keys</h2>
++      <section className="card">
++        <div className="card-head">
++          <h2>Ingest keys</h2>
++        </div>
++        <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
+         <CreateKeyForm base={base} />
+-        <p>
++        <p className="muted">
+           The full alert URL — the one with the key in it — is shown once, immediately after creation. Copy it
+           into your workflow tool then; it cannot be shown again.
+         </p>
+-        <ul>
++        <ul style={{ display: 'grid', gap: 10, listStyle: 'none' }}>
+           {keys.map((k) => (
+-            <li key={k.id}>
+-              <strong>{k.name}</strong> <code>{k.prefix}…</code>{' '}
+-              {k.revokedAt ? (
+-                <em>revoked</em>
+-              ) : (
+-                <form action={revokeKeyAction} style={{ display: 'inline' }}>
+-                  <input type="hidden" name="keyId" value={k.id} />
+-                  <button>Revoke</button>
+-                </form>
+-              )}
+-              <div style={{ fontSize: 13, opacity: 0.75 }}>
++            <li
++              key={k.id}
++              style={{
++                display: 'grid',
++                gap: 6,
++                padding: 12,
++                border: '1px solid var(--line)',
++                borderRadius: 10,
++                background: 'var(--bg-input)',
++                opacity: k.revokedAt ? 0.55 : 1,
++              }}
++            >
++              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
++                <strong>{k.name}</strong>
++                <code>{k.prefix}…</code>
++                <span style={{ flex: 1 }} />
++                {k.revokedAt ? (
++                  <em className="muted">revoked</em>
++                ) : (
++                  <form action={revokeKeyAction}>
++                    <input type="hidden" name="keyId" value={k.id} />
++                    <button>Revoke</button>
++                  </form>
++                )}
++              </div>
++              <div className="muted" style={{ fontSize: 12 }}>
+                 POST to <code>{`${base}/api/v1/alerts/`}</code>
+                 followed by this key — the full URL was shown when the key was created and is not recoverable
+                 here, because only a hash of the key is stored.
+@@ -58,6 +89,7 @@ export default async function Settings() {
+             </li>
+           ))}
+         </ul>
++        </div>
+       </section>
+     </main>
+   );
+diff --git a/src/app/globals.css b/src/app/globals.css
+index 4c18fb3..978ad03 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -1,13 +1,26 @@
+ :root {
+-  --background: #ffffff;
+-  --foreground: #171717;
++  color-scheme: dark;
++
++  --bg: #0b0b0f;
++  --bg-elev: #131319;
++  --bg-input: #0e0e14;
++  --line: #26262f;
++  --line-strong: #3a3a47;
++  --fg: #ececf1;
++  --fg-muted: #9a9aab;
++  --accent: #7c5cff;
++  --accent-soft: rgba(124, 92, 255, 0.16);
++  --danger: #ff6b81;
++  --ok: #4ade80;
++  --radius: 10px;
++  --font: var(--font-geist-sans), system-ui, sans-serif;
++  --mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+ }
+ 
+-@media (prefers-color-scheme: dark) {
+-  :root {
+-    --background: #0a0a0a;
+-    --foreground: #ededed;
+-  }
++* {
++  box-sizing: border-box;
++  padding: 0;
++  margin: 0;
+ }
+ 
+ html {
+@@ -17,33 +30,676 @@ html {
+ html,
+ body {
+   max-width: 100vw;
+-  overflow-x: hidden;
++  /* clip, not hidden: `hidden` makes these a scroll container, which stops
++     position:sticky working for the nav and the editor's save bar. */
++  overflow-x: clip;
+ }
+ 
+ body {
+   min-height: 100%;
+   display: flex;
+   flex-direction: column;
+-  color: var(--foreground);
+-  background: var(--background);
+-  font-family: Arial, Helvetica, sans-serif;
++  color: var(--fg);
++  font-family: var(--font);
++  font-size: 14px;
++  line-height: 1.5;
+   -webkit-font-smoothing: antialiased;
+   -moz-osx-font-smoothing: grayscale;
++  background:
++    radial-gradient(1100px 620px at 12% -12%, rgba(124, 92, 255, 0.16), transparent 60%),
++    radial-gradient(900px 520px at 92% 0%, rgba(34, 211, 238, 0.08), transparent 55%),
++    var(--bg);
++  background-attachment: fixed;
+ }
+ 
+-* {
+-  box-sizing: border-box;
+-  padding: 0;
+-  margin: 0;
++h1 {
++  font-size: 26px;
++  letter-spacing: -0.02em;
++}
++h2 {
++  font-size: 15px;
++  letter-spacing: 0.08em;
++  text-transform: uppercase;
++  color: var(--fg-muted);
++  font-weight: 600;
+ }
+ 
+ a {
+-  color: inherit;
++  color: var(--accent);
++  text-decoration: none;
++}
++a:hover {
++  text-decoration: underline;
++}
++
++code {
++  font-family: var(--mono);
++  font-size: 12.5px;
++  background: var(--bg-input);
++  border: 1px solid var(--line);
++  border-radius: 6px;
++  padding: 3px 6px;
++  color: #cdc4ff;
++}
++
++/* ---- forms ---------------------------------------------------------- */
++
++label {
++  display: grid;
++  gap: 6px;
++  font-size: 12px;
++  font-weight: 500;
++  letter-spacing: 0.02em;
++  color: var(--fg-muted);
++}
++
++input,
++select,
++textarea {
++  width: 100%;
++  font: inherit;
++  font-size: 13px;
++  color: var(--fg);
++  background: var(--bg-input);
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  padding: 8px 10px;
++  transition: border-color 0.15s, box-shadow 0.15s;
++}
++input::placeholder {
++  color: #5c5c6b;
++}
++input:hover,
++select:hover {
++  border-color: var(--line-strong);
++}
++input:focus-visible,
++select:focus-visible,
++button:focus-visible {
++  outline: none;
++  border-color: var(--accent);
++  box-shadow: 0 0 0 3px var(--accent-soft);
++}
++select {
++  appearance: none;
++  background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
++    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
++  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
++  background-size: 5px 5px, 5px 5px;
++  background-repeat: no-repeat;
++  padding-right: 30px;
++}
++input[type='checkbox'] {
++  width: 15px;
++  height: 15px;
++  accent-color: var(--accent);
++  cursor: pointer;
++}
++
++button {
++  font: inherit;
++  font-size: 13px;
++  font-weight: 500;
++  color: var(--fg);
++  background: #1c1c25;
++  border: 1px solid var(--line-strong);
++  border-radius: 8px;
++  padding: 8px 14px;
++  cursor: pointer;
++  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
++}
++button:hover:not(:disabled) {
++  background: #262632;
++  border-color: #4a4a5a;
++}
++button:disabled {
++  opacity: 0.5;
++  cursor: not-allowed;
++}
++
++/* primary action: submit buttons and anything opting in */
++button[type='submit'],
++.btn-primary {
++  display: inline-block;
++  background: var(--accent);
++  border-color: var(--accent);
++  color: #fff;
++}
++a.btn-primary:hover {
++  text-decoration: none;
++}
++button[type='submit']:hover:not(:disabled),
++.btn-primary:hover:not(:disabled) {
++  background: #6c4cf0;
++  border-color: #6c4cf0;
++}
++
++fieldset {
++  border: 1px solid var(--line);
++  border-radius: var(--radius);
++  padding: 16px;
++  background: rgba(255, 255, 255, 0.015);
++}
++legend {
++  font-size: 11px;
++  letter-spacing: 0.1em;
++  text-transform: uppercase;
++  color: var(--fg-muted);
++  padding: 0 6px;
++}
++
++/* ---- shared bits ---------------------------------------------------- */
++
++.panel {
++  background: var(--bg-elev);
++  border: 1px solid var(--line);
++  border-radius: 14px;
++  padding: 20px;
++  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -18px rgba(0, 0, 0, 0.9);
++}
++
++.muted {
++  color: var(--fg-muted);
++  font-size: 12.5px;
++}
++
++.chip {
++  font-family: var(--mono);
++  font-size: 12px;
++  padding: 4px 9px;
++  border-radius: 999px;
++  background: var(--accent-soft);
++  border: 1px solid rgba(124, 92, 255, 0.35);
++  color: #c3b4ff;
++}
++.chip:hover:not(:disabled) {
++  background: rgba(124, 92, 255, 0.28);
++  border-color: var(--accent);
++}
++
++/* top nav */
++.nav {
++  position: sticky;
++  top: 0;
++  z-index: 10;
++  display: flex;
++  align-items: center;
++  gap: 4px;
++  padding: 0 24px;
++  height: 56px;
++  border-bottom: 1px solid var(--line);
++  background: rgba(11, 11, 15, 0.72);
++  backdrop-filter: blur(12px);
++}
++.nav .brand {
++  font-weight: 600;
++  font-size: 14px;
++  letter-spacing: -0.01em;
++  color: var(--fg);
++  margin-right: 20px;
++}
++.nav .brand:hover {
+   text-decoration: none;
+ }
++.nav .brand::before {
++  content: '';
++  display: inline-block;
++  width: 8px;
++  height: 8px;
++  margin-right: 8px;
++  border-radius: 50%;
++  background: var(--accent);
++  box-shadow: 0 0 10px var(--accent);
++  vertical-align: middle;
++}
++.nav a:not(.brand) {
++  color: var(--fg-muted);
++  font-size: 13px;
++  font-weight: 500;
++  padding: 6px 10px;
++  border-radius: 7px;
++}
++.nav a:not(.brand):hover {
++  color: var(--fg);
++  background: rgba(255, 255, 255, 0.05);
++  text-decoration: none;
++}
++
++/* status text next to Save / Test fire */
++.status {
++  font-size: 12.5px;
++  color: var(--fg-muted);
++  font-family: var(--mono);
++}
++
++@media (max-width: 900px) {
++  .nav {
++    padding: 0 16px;
++  }
++}
++
++/* ==== editor shell ==================================================== */
++
++.editor {
++  width: 100%;
++  max-width: 1600px;
++  margin: 0 auto;
++  padding: 28px 24px 96px;
++  display: grid;
++  gap: 20px;
++}
++
++.page-head {
++  display: flex;
++  gap: 16px;
++  align-items: flex-start;
++  flex-wrap: wrap;
++}
++.page-head > div:first-child {
++  flex: 1;
++  min-width: 260px;
++}
++.page-head p {
++  margin-top: 6px;
++}
++.head-actions {
++  display: flex;
++  gap: 8px;
++  align-items: center;
++}
++
++/* click-to-copy widget URL bar */
++.widget-url {
++  display: flex;
++  gap: 10px;
++  align-items: center;
++  flex-wrap: wrap;
++}
++.widget-url .url-copy {
++  flex: 1;
++  min-width: 260px;
++  height: 40px;
++  background: var(--bg-input);
++  border-color: var(--line);
++  color: var(--fg-muted);
++  font-weight: 600;
++  letter-spacing: 0.01em;
++}
++.widget-url .url-copy:hover:not(:disabled) {
++  color: var(--fg);
++  background: #15151d;
++  border-color: var(--line-strong);
++}
++.widget-url .btn-launch {
++  height: 40px;
++  display: inline-flex;
++  align-items: center;
++  padding: 0 18px;
++}
++
++/* ==== editor grid ===================================================== */
++
++.editor-grid {
++  display: grid;
++  grid-template-columns: minmax(180px, 220px) minmax(0, 1.15fr) minmax(0, 1fr);
++  gap: 20px;
++  align-items: start;
++}
++
++.side {
++  display: grid;
++  gap: 4px;
++  align-content: start;
++  position: sticky;
++  top: 76px;
++}
++.side h2 {
++  padding: 0 4px 8px;
++}
++.side-item {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 9px 10px;
++  border-radius: 9px;
++  border: 1px solid transparent;
++  transition: background 0.15s, border-color 0.15s;
++}
++.side-item:hover {
++  background: rgba(255, 255, 255, 0.04);
++}
++.side-item[data-selected='true'] {
++  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg-elev);
++  border-color: rgba(124, 92, 255, 0.4);
++}
++.side-item > button {
++  flex: 1;
++  background: none;
++  border: 0;
++  padding: 0;
++  text-align: left;
++  font-size: 13.5px;
++  font-weight: 500;
++  color: var(--fg-muted);
++}
++.side-item[data-selected='true'] > button {
++  color: var(--fg);
++  font-weight: 600;
++}
++.side-item > button:hover:not(:disabled) {
++  background: none;
++  color: var(--fg);
++}
++/* a dot, not a checkbox: the sidebar only reports enabled-ness */
++.side-dot {
++  width: 7px;
++  height: 7px;
++  border-radius: 50%;
++  flex: none;
++  background: var(--ok);
++  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
++}
++.side-dot[data-on='false'] {
++  background: var(--line-strong);
++  box-shadow: none;
++}
++
++.col-main,
++.col-preview {
++  display: grid;
++  gap: 16px;
++  align-content: start;
++}
++.col-preview {
++  position: sticky;
++  top: 76px;
++}
++
++/* ==== cards =========================================================== */
++
++.card {
++  background: var(--bg-elev);
++  border: 1px solid var(--line);
++  border-radius: 14px;
++  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -18px rgba(0, 0, 0, 0.9);
++  overflow: hidden;
++}
++.card-head {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  padding: 13px 18px;
++  border-bottom: 1px solid var(--line);
++  background: rgba(255, 255, 255, 0.02);
++}
++.card-head h2 {
++  flex: 1;
++}
++.card-body {
++  padding: 6px 18px 14px;
++  display: grid;
++}
++.card-body > .note {
++  padding: 10px 0 4px;
++}
++
++/* ==== field rows ====================================================== */
++
++.field {
++  display: grid;
++  grid-template-columns: minmax(110px, 190px) minmax(0, 1fr);
++  gap: 16px;
++  align-items: center;
++  padding: 11px 0;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
++}
++.card-body > .field:last-child,
++.field:last-child {
++  border-bottom: 0;
++}
++.field-label {
++  font-size: 13px;
++  font-weight: 500;
++  color: var(--fg);
++  letter-spacing: 0;
++}
++.field-control {
++  display: grid;
++}
++
++/* switch */
++.switch {
++  position: relative;
++  display: inline-flex;
++  width: 44px;
++  height: 24px;
++}
++.switch input {
++  position: absolute;
++  inset: 0;
++  width: 100%;
++  height: 100%;
++  margin: 0;
++  padding: 0;
++  opacity: 0;
++  cursor: pointer;
++  z-index: 1;
++}
++.switch-track {
++  flex: 1;
++  border-radius: 999px;
++  background: #2b2b36;
++  border: 1px solid var(--line-strong);
++  transition: background 0.18s, border-color 0.18s;
++}
++.switch-track::after {
++  content: '';
++  display: block;
++  width: 18px;
++  height: 18px;
++  margin: 2px;
++  border-radius: 50%;
++  background: #8b8b9c;
++  transition: transform 0.18s, background 0.18s;
++}
++.switch input:checked + .switch-track {
++  background: var(--accent);
++  border-color: var(--accent);
++}
++.switch input:checked + .switch-track::after {
++  transform: translateX(20px);
++  background: #fff;
++}
++.switch input:focus-visible + .switch-track {
++  box-shadow: 0 0 0 3px var(--accent-soft);
++}
++
++/* slider */
++.slider {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto;
++  gap: 12px;
++  align-items: center;
++}
++.slider-value {
++  font-family: var(--mono);
++  font-size: 12px;
++  color: var(--fg-muted);
++  min-width: 58px;
++  text-align: right;
++}
++input[type='range'] {
++  appearance: none;
++  width: 100%;
++  height: 18px;
++  padding: 0;
++  background: none;
++  border: 0;
++  cursor: pointer;
++}
++input[type='range']:hover,
++input[type='range']:focus-visible {
++  border: 0;
++  box-shadow: none;
++}
++input[type='range']::-webkit-slider-runnable-track {
++  height: 4px;
++  border-radius: 999px;
++  background: #2b2b36;
++}
++input[type='range']::-moz-range-track {
++  height: 4px;
++  border-radius: 999px;
++  background: #2b2b36;
++}
++input[type='range']::-webkit-slider-thumb {
++  appearance: none;
++  width: 15px;
++  height: 15px;
++  margin-top: -5.5px;
++  border-radius: 50%;
++  background: #fff;
++  border: 0;
++  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
++  transition: box-shadow 0.15s;
++}
++input[type='range']::-moz-range-thumb {
++  width: 15px;
++  height: 15px;
++  border-radius: 50%;
++  background: #fff;
++  border: 0;
++  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
++}
++input[type='range']:focus-visible::-webkit-slider-thumb {
++  box-shadow: 0 0 0 4px var(--accent-soft);
++}
+ 
+-@media (prefers-color-scheme: dark) {
+-  html {
+-    color-scheme: dark;
++/* colour swatch */
++.swatch-row {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto;
++  gap: 8px;
++  align-items: center;
++}
++.swatch-row input[type='text'],
++.swatch-row > input:not([type]) {
++  font-family: var(--mono);
++  font-size: 12.5px;
++}
++input[type='color'].swatch {
++  width: 34px;
++  height: 32px;
++  padding: 3px;
++  border-radius: 8px;
++  background: var(--bg-input);
++  border: 1px solid var(--line);
++  cursor: pointer;
++}
++input[type='color'].swatch::-webkit-color-swatch-wrapper {
++  padding: 0;
++}
++input[type='color'].swatch::-webkit-color-swatch {
++  border: 0;
++  border-radius: 5px;
++}
++input[type='color'].swatch::-moz-color-swatch {
++  border: 0;
++  border-radius: 5px;
++}
++
++/* ==== preview ========================================================= */
++
++.preview-stage {
++  aspect-ratio: 16 / 9;
++  width: 100%;
++  background: repeating-conic-gradient(#17171d 0% 25%, #1e1e26 0% 50%) 0 0 / 24px 24px;
++  border-bottom: 1px solid var(--line);
++  overflow: hidden;
++}
++.preview-stage iframe {
++  width: 100%;
++  height: 100%;
++  border: 0;
++  display: block;
++}
++.preview-foot {
++  display: flex;
++  gap: 10px;
++  align-items: center;
++  padding: 12px 16px;
++  flex-wrap: wrap;
++}
++.preview-foot .muted {
++  flex: 1;
++  min-width: 120px;
++}
++
++/* ==== sticky save bar ================================================= */
++
++.savebar {
++  position: sticky;
++  bottom: 0;
++  z-index: 9;
++  display: flex;
++  align-items: center;
++  justify-content: flex-end;
++  gap: 12px;
++  flex-wrap: wrap;
++  margin: 4px -24px -96px;
++  padding: 12px 24px;
++  border-top: 1px solid var(--line);
++  background: rgba(11, 11, 15, 0.82);
++  backdrop-filter: blur(12px);
++}
++.savebar .btn-primary {
++  padding: 9px 22px;
++}
++
++/* variable chips row */
++.chip-row {
++  display: flex;
++  gap: 6px;
++  flex-wrap: wrap;
++  padding: 12px 0 2px;
++}
++
++@media (max-width: 1180px) {
++  .editor-grid {
++    grid-template-columns: minmax(170px, 200px) minmax(0, 1fr);
+   }
++  .col-preview {
++    grid-column: 1 / -1;
++    position: static;
++  }
++}
++@media (max-width: 760px) {
++  .editor {
++    padding: 20px 16px 96px;
++  }
++  .editor-grid {
++    grid-template-columns: minmax(0, 1fr);
++  }
++  .side {
++    position: static;
++  }
++  .field {
++    grid-template-columns: minmax(0, 1fr);
++    gap: 8px;
++  }
++  .savebar {
++    margin: 4px -16px -96px;
++    padding: 12px 16px;
++  }
++}
++
++.sound-row {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto;
++  gap: 8px;
++  align-items: center;
++}
++.sound-row button {
++  padding: 8px 12px;
++  line-height: 1;
+ }
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index 09c211f..a7a65f9 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -19,7 +19,9 @@ export const metadata: Metadata = {
+ 
+ export default function RootLayout({ children }: { children: React.ReactNode }) {
+   return (
+-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
++    // suppressHydrationWarning: browser extensions (Kantu/UI.Vision stamps
++    // data-kantu) mutate <html> before hydration; only this element is exempted.
++    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`} suppressHydrationWarning>
+       <body>{children}</body>
+     </html>
+   );
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 95ad71d..2328bd5 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -2,17 +2,26 @@ import Link from 'next/link';
+ 
+ export default function Home() {
+   return (
+-    <main style={{ maxWidth: 640, margin: '10vh auto', padding: '0 24px', display: 'grid', gap: 20 }}>
+-      <h1 style={{ margin: 0 }}>OBS Alert Platform</h1>
+-      <p style={{ margin: 0, lineHeight: 1.5 }}>
+-        Turn an HTTP request — from n8n, Zapier, a chatbot, a donation processor, anything that can POST JSON —
+-        into an on-stream alert in OBS. Sign in to get an overlay URL to paste into an OBS Browser Source and an
+-        ingest key to point your automation at, then design the donation, follow, sub and raid alerts in the
+-        dashboard with a live preview.
+-      </p>
+-      <div style={{ display: 'flex', gap: 12 }}>
+-        <Link href="/login">Log in</Link>
+-        <Link href="/signup">Create an account</Link>
++    <main style={{ maxWidth: 620, margin: '14vh auto', padding: '0 24px', display: 'grid', gap: 24 }}>
++      <div style={{ display: 'grid', gap: 14 }}>
++        <span className="chip" style={{ justifySelf: 'start' }}>
++          POST → on-stream
++        </span>
++        <h1 style={{ fontSize: 40, lineHeight: 1.1 }}>OBS Alert Platform</h1>
++        <p className="muted" style={{ fontSize: 15, lineHeight: 1.6 }}>
++          Turn an HTTP request — from n8n, Zapier, a chatbot, a donation processor, anything that can POST JSON —
++          into an on-stream alert in OBS. Sign in to get an overlay URL to paste into an OBS Browser Source and an
++          ingest key to point your automation at, then design the donation, follow, sub and raid alerts in the
++          dashboard with a live preview.
++        </p>
++      </div>
++      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
++        <Link href="/signup" className="btn-primary" style={{ padding: '10px 18px', borderRadius: 8, color: '#fff' }}>
++          Create an account
++        </Link>
++        <Link href="/login" style={{ padding: '10px 18px' }}>
++          Log in
++        </Link>
+       </div>
+     </main>
+   );
+diff --git a/src/lib/sounds.ts b/src/lib/sounds.ts
+new file mode 100644
+index 0000000..7777d51
+--- /dev/null
++++ b/src/lib/sounds.ts
+@@ -0,0 +1,15 @@
++/** The alert sounds shipped with the app, served straight out of `public/`.
++ *  Synthesised by `scripts/gen_sounds.py` — regenerate there, not by hand, and
++ *  keep this list in step with the files (tests/sounds.test.ts checks it). */
++export const BUILT_IN_SOUNDS = [
++  { value: '/sounds/chime.wav', label: 'Chime' },
++  { value: '/sounds/ding.wav', label: 'Ding' },
++  { value: '/sounds/coin.wav', label: 'Coin' },
++  { value: '/sounds/blip.wav', label: 'Blip' },
++  { value: '/sounds/whoosh.wav', label: 'Whoosh' },
++  { value: '/sounds/fanfare.wav', label: 'Fanfare' },
++] as const;
++
++export function isBuiltInSound(url: string): boolean {
++  return BUILT_IN_SOUNDS.some((s) => s.value === url);
++}
+diff --git a/tests/sounds.test.ts b/tests/sounds.test.ts
+new file mode 100644
+index 0000000..21a4fc4
+--- /dev/null
++++ b/tests/sounds.test.ts
+@@ -0,0 +1,16 @@
++import { existsSync, readFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { describe, expect, it } from 'vitest';
++import { BUILT_IN_SOUNDS } from '../src/lib/sounds';
++
++// The picker offers these paths as-is to the overlay; a renamed or missing file
++// is a silent no-sound alert in production, so check the assets really exist.
++describe('built-in sounds', () => {
++  it.each(BUILT_IN_SOUNDS.map((s) => s.value))('%s exists and is a WAV', (url) => {
++    const path = join(process.cwd(), 'public', url);
++    expect(existsSync(path), `${path} missing — run python3 scripts/gen_sounds.py`).toBe(true);
++    const head = readFileSync(path).subarray(0, 12);
++    expect(head.subarray(0, 4).toString('latin1')).toBe('RIFF');
++    expect(head.subarray(8, 12).toString('latin1')).toBe('WAVE');
++  });
++});
+
+```

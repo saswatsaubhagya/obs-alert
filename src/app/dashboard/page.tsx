@@ -17,5 +17,8 @@ export default async function Dashboard() {
     }))
   );
   const samples = Object.fromEntries(EVENT_TYPE_KEYS.map((key) => [key, sampleValues(key)]));
-  return <Editor types={types} overlayToken={overlay!.token} samples={samples} />;
+  // A user without an overlay row (should not happen post-signup, but the
+  // schema does not guarantee it) gets an explicit empty state from Editor
+  // rather than a broken `/overlay/undefined` preview URL.
+  return <Editor types={types} overlayToken={overlay?.token ?? null} samples={samples} />;
 }

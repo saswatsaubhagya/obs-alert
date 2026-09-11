@@ -22,6 +22,12 @@ export async function revokeIngestKeyFor(userId: string, keyId: string) {
 }
 
 export async function rotateOverlayTokenFor(userId: string) {
+  // ponytail: updateMany assumes a single Overlay per user — true for every
+  // account today (nothing creates a second one) — and would set the SAME new
+  // token on all of a user's overlays if that ever changed, breaking any but
+  // one of them. Schema allows Overlay[]; if multi-overlay is ever built,
+  // this needs an overlayId parameter and a where clause scoped to it, not a
+  // blanket per-user updateMany.
   const token = newOverlayToken();
   await prisma.overlay.updateMany({ where: { userId }, data: { token } });
   return { token };

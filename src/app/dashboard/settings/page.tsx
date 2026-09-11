@@ -13,12 +13,18 @@ export default async function Settings() {
     <main style={{ maxWidth: 760, margin: '4vh auto', display: 'grid', gap: 28 }}>
       <section>
         <h2>OBS Browser Source URL</h2>
-        <code>{`${base}/overlay/${overlay?.token}`}</code>
-        <p>Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.</p>
-        <form action={rotateTokenAction}>
-          <button>Rotate overlay token</button>
-        </form>
-        <p>Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+        {overlay ? (
+          <>
+            <code>{`${base}/overlay/${overlay.token}`}</code>
+            <p>Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.</p>
+            <form action={rotateTokenAction}>
+              <button>Rotate overlay token</button>
+            </form>
+            <p>Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+          </>
+        ) : (
+          <p>No overlay has been set up for this account yet — contact support to have one created.</p>
+        )}
       </section>
 
       <section>

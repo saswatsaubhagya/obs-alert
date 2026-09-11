@@ -116,3 +116,15 @@ test('the log records source api', async () => {
   await handleAlertRequest(post(body), plain);
   expect((await prisma.alertLog.findFirst())?.source).toBe('api');
 });
+
+test('an exception during processing gives 500 and never propagates', async () => {
+  const { plain } = await seedKey();
+  const badReq = {
+    headers: new Headers(),
+    text: () => Promise.reject(new Error('boom')),
+  } as unknown as Request;
+
+  const res = await handleAlertRequest(badReq, plain);
+  expect(res.status).toBe(500);
+  expect(await res.json()).toEqual({ error: 'internal error' });
+});

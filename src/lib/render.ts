@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Style } from './eventTypes';
+import { clampDuration, renderTemplate, templateValues } from './template';
 import type { Values } from './validate';
+
+// The template functions themselves live in src/lib/template.ts so the
+// dashboard preview can import them without pulling `node:crypto` into the
+// browser bundle. Re-exported here because this module is the rendering entry
+// point everything else already imports.
+export { clampDuration, formatValue, renderTemplate, templateValues } from './template';
 
 export type RenderConfig = {
   template: string;
@@ -26,29 +33,6 @@ export type AlertPayload = {
   soundVolume: number;
 };
 
-function formatValue(name: string, value: string | number, values: Values, locale: string): string {
-  if (typeof value !== 'number') return value;
-  const currency = typeof values.currency === 'string' ? values.currency : undefined;
-  if (name === 'amount' && currency) {
-    try {
-      return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value);
-    } catch {
-      return new Intl.NumberFormat(locale).format(value); // unknown currency code
-    }
-  }
-  return new Intl.NumberFormat(locale).format(value);
-}
-
-/** Single pass find-and-replace over a flat map: no expressions, no nesting, and
- *  substituted values are never rescanned, so donor text containing "{amount}"
- *  cannot pull in another field. */
-export function renderTemplate(template: string, values: Values, locale: string): string {
-  return template.replace(/\{(\w+)\}/g, (_m, name: string) => {
-    const v = values[name];
-    return v === undefined ? '' : formatValue(name, v, values, locale);
-  });
-}
-
 export function renderAlert(input: {
   eventTypeKey: string;
   values: Values;
@@ -58,15 +42,15 @@ export function renderAlert(input: {
   const message = typeof values.message === 'string' ? values.message : '';
   // message travels as its own payload field and must never be interpolated
   // into text/title, so it is excluded from the values templates render from.
-  const { message: _message, ...templateValues } = values;
+  const forTemplate = templateValues(values);
   return {
     id: randomUUID(),
     eventType: eventTypeKey,
-    title: config.titleTemplate ? renderTemplate(config.titleTemplate, templateValues, config.locale) : '',
-    text: renderTemplate(config.template, templateValues, config.locale),
+    title: config.titleTemplate ? renderTemplate(config.titleTemplate, forTemplate, config.locale) : '',
+    text: renderTemplate(config.template, forTemplate, config.locale),
     message,
     style: config.style,
-    durationMs: Math.min(30000, Math.max(100, Math.round(config.durationMs))),
+    durationMs: clampDuration(config.durationMs),
     imageUrl: config.imageUrl,
     soundUrl: config.soundUrl,
     soundVolume: config.soundVolume,

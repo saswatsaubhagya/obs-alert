@@ -172,6 +172,8 @@ shows or is disabled outright.
 Environment variables (see `.env.example`): `DATABASE_URL`, `AUTH_SECRET`,
 `PUBLIC_URL` (used to build the overlay URL and the `/api/v1/alerts` URL
 shown in the dashboard — set it to your public domain in production).
+`TEST_DATABASE_URL` is used by the test suite only (see **Development**).
+
 You do **not** need `AUTH_TRUST_HOST` or `AUTH_URL`. `src/auth.ts` sets
 `trustHost: true`, which is the right setting for a self-hosted app behind a
 trusted reverse proxy: Auth.js otherwise defaults it to false whenever
@@ -223,8 +225,21 @@ deployment, not bugs. Read this before you hit them by surprise.
 
 ## Development
 
+The test suite runs against a **separate database**, created once:
+
 ```bash
-npm test              # 16 files, 100 tests
+docker compose exec -T db psql -U postgres -c 'CREATE DATABASE obsalert_test'
+npm run db:test:deploy        # applies prisma/migrations to the test database
+```
+
+`tests/helpers/env.ts` points the Prisma client at `TEST_DATABASE_URL`,
+defaulting to `DATABASE_URL` with `_test` appended to the database name, and
+**refuses to run if the two resolve to the same URL** — `resetDb()` truncates
+`User` and every child table, so pointing the suite at your development
+database would wipe the account, keys and alert configs you just set up.
+
+```bash
+npm test              # 20 files, 114 tests
 npx tsc --noEmit
 npm run lint
 npm run build
@@ -245,3 +260,7 @@ Notable files:
 - `src/lib/retention.ts`, `src/instrumentation.ts` — see **Log retention**.
 - `src/lib/eventTypes.ts` — the source of truth for the four built-in event
   types and their fields.
+- `src/lib/template.ts` — the rendering contract (`renderTemplate`,
+  `formatValue`, the `message` exclusion, the duration clamp), deliberately
+  free of Node built-ins so `src/lib/render.ts` on the server and the
+  dashboard's live preview in the browser share one copy of it.

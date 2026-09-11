@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Field, Style } from '@/lib/eventTypes';
 import type { AlertPayload } from '@/lib/render';
+// The one copy of the rendering contract, shared with src/lib/render.ts so the
+// preview cannot drift from what actually streams. (src/lib/template.ts is
+// `node:crypto`-free precisely so this client component can import it.)
+import { clampDuration, renderTemplate, templateValues } from '@/lib/template';
 import { manualSendAction, saveConfigAction, testFireAction, type ConfigPatch } from './actions';
 
 type TypeConfig = {
@@ -67,29 +71,6 @@ function draftToPatch(d: Draft): ConfigPatch {
     minAmount: d.minAmount === '' ? null : Number(d.minAmount),
     locale: d.locale,
   };
-}
-
-// Mirrors renderTemplate() in src/lib/render.ts. Duplicated rather than imported
-// so this client component never drags src/lib/render.ts's `node:crypto` import
-// (used only by renderAlert, for id generation) into the browser bundle.
-function renderTemplatePreview(
-  template: string,
-  values: Record<string, string | number>,
-  locale: string
-): string {
-  return template.replace(/\{(\w+)\}/g, (_m, name: string) => {
-    const v = values[name];
-    if (v === undefined) return '';
-    if (typeof v !== 'number') return v;
-    if (name === 'amount' && typeof values.currency === 'string') {
-      try {
-        return new Intl.NumberFormat(locale, { style: 'currency', currency: values.currency }).format(v);
-      } catch {
-        return new Intl.NumberFormat(locale).format(v);
-      }
-    }
-    return new Intl.NumberFormat(locale).format(v);
-  });
 }
 
 const POSITIONS = ['top-left', 'top', 'top-right', 'center', 'bottom-left', 'bottom', 'bottom-right'];
@@ -162,15 +143,15 @@ export default function Editor({
     const timer = setTimeout(() => {
       const values = samples[selectedKey] ?? {};
       // Ruling 11: message never feeds text/title — it is not a template value.
-      const { message: _message, ...templateValues } = values;
+      const forTemplate = templateValues(values);
       const alert: AlertPayload = {
         id: 'preview',
         eventType: selectedKey,
-        title: draft.titleTemplate ? renderTemplatePreview(draft.titleTemplate, templateValues, draft.locale) : '',
-        text: renderTemplatePreview(draft.template, templateValues, draft.locale),
+        title: draft.titleTemplate ? renderTemplate(draft.titleTemplate, forTemplate, draft.locale) : '',
+        text: renderTemplate(draft.template, forTemplate, draft.locale),
         message: typeof values.message === 'string' ? values.message : '',
         style: draft.style,
-        durationMs: Math.min(30000, Math.max(100, Math.round(Number(draft.durationMs) || 0))),
+        durationMs: clampDuration(draft.durationMs),
         imageUrl: draft.imageUrl || null,
         soundUrl: draft.soundUrl || null,
         soundVolume: Number(draft.soundVolume),

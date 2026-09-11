@@ -62,16 +62,28 @@ export async function sendAlert(userId: string, body: unknown, source: Source): 
   const alert = renderAlert({ eventTypeKey: key, values: parsed.values, config: config.render });
   const delivered = publish(userId, alert);
 
-  await prisma.alertLog.create({
-    data: {
-      userId,
-      eventTypeKey: key,
-      payload: parsed.values,
-      renderedText: alert.text,
-      source,
-      deliveredTo: delivered,
-    },
-  });
+  try {
+    await prisma.alertLog.create({
+      data: {
+        userId,
+        eventTypeKey: key,
+        payload: parsed.values,
+        renderedText: alert.text,
+        source,
+        deliveredTo: delivered,
+      },
+    });
+  } catch (err) {
+    // The alert is already on screen by this point. Letting a log-write failure
+    // become a 500 would make a well-behaved caller (an n8n workflow with
+    // retries) fire the same alert again — a duplicate on stream, which the
+    // streamer sees, to protect a row nobody is watching. Delivery is the
+    // product; the log is observability. So: warn loudly, still return 200.
+    // (The alternative — writing the log before publishing — would need a
+    // second write to record `deliveredTo`, and would drop the alert entirely
+    // whenever the database blips.)
+    console.error(`alert log write failed for ${userId}/${key}: ${err instanceof Error ? err.message : err}`);
+  }
 
   return { status: 200, body: { ok: true, alertId: alert.id, delivered } };
 }

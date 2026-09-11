@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from 'vitest';
+import { beforeEach, expect, test, vi } from 'vitest';
 import prisma from '@/lib/db';
 import { sendAlert } from '@/lib/sendAlert';
 import { __reset, subscribe } from '@/lib/hub';
@@ -143,4 +143,25 @@ test('donor markup survives as literal text in the rendered output', async () =>
   await sendAlert(user.id, { ...donation, name: '<img src=x onerror=alert(1)>' }, 'api');
   const p = JSON.parse(frames[0].slice(6));
   expect(p.text).toContain('<img src=x onerror=alert(1)>');
+});
+
+// M1: the alert is published before the log row is written, so a failing log
+// write must not turn into a 500 — the caller would retry and put a duplicate
+// alert on stream.
+test('a failed log write still returns 200 after the alert has been delivered', async () => {
+  const { user } = await makeUser();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  const create = vi.spyOn(prisma.alertLog, 'create').mockRejectedValueOnce(new Error('db blip'));
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = await sendAlert(user.id, donation, 'api');
+    expect(r.status).toBe(200);
+    expect(frames).toHaveLength(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('alert log write failed'));
+  } finally {
+    create.mockRestore();
+    errors.mockRestore();
+  }
 });

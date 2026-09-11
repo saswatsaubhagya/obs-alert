@@ -56,11 +56,14 @@ export function renderAlert(input: {
 }): AlertPayload {
   const { eventTypeKey, values, config } = input;
   const message = typeof values.message === 'string' ? values.message : '';
+  // message travels as its own payload field and must never be interpolated
+  // into text/title, so it is excluded from the values templates render from.
+  const { message: _message, ...templateValues } = values;
   return {
     id: randomUUID(),
     eventType: eventTypeKey,
-    title: config.titleTemplate ? renderTemplate(config.titleTemplate, values, config.locale) : '',
-    text: renderTemplate(config.template, values, config.locale),
+    title: config.titleTemplate ? renderTemplate(config.titleTemplate, templateValues, config.locale) : '',
+    text: renderTemplate(config.template, templateValues, config.locale),
     message,
     style: config.style,
     durationMs: Math.min(30000, Math.max(100, Math.round(config.durationMs))),

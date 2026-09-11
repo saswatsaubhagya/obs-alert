@@ -73,6 +73,17 @@ test('clamps duration into 100..30000', () => {
   expect(hi.durationMs).toBe(30000);
 });
 
+test('a {message} token in a template does not interpolate donor text into text', () => {
+  const a = renderAlert({
+    eventTypeKey: 'donation',
+    values: { name: 'bob', amount: 1, message: '<script>alert(1)</script>' },
+    config: { ...cfg, template: '{name} says {message}' },
+  });
+  expect(a.text).not.toContain('<script>');
+  expect(a.text).toBe('bob says ');
+  expect(a.message).toBe('<script>alert(1)</script>');
+});
+
 test('a null title template yields an empty title', () => {
   const a = renderAlert({ eventTypeKey: 'follow', values: { name: 'b' }, config: { ...cfg, titleTemplate: null } });
   expect(a.title).toBe('');

@@ -16,6 +16,9 @@ RUN npx prisma generate && npm run build
 
 FROM node:22-slim
 WORKDIR /app
+# NODE_ENV=production is what flips Auth.js's trustHost default to false, which
+# is why src/auth.ts sets `trustHost: true` explicitly. Do not "fix" a login
+# failure here by unsetting this; AUTH_TRUST_HOST/AUTH_URL are not needed either.
 ENV NODE_ENV=production
 COPY --from=build /app ./
 EXPOSE 3000

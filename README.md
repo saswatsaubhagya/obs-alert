@@ -172,6 +172,14 @@ shows or is disabled outright.
 Environment variables (see `.env.example`): `DATABASE_URL`, `AUTH_SECRET`,
 `PUBLIC_URL` (used to build the overlay URL and the `/api/v1/alerts` URL
 shown in the dashboard — set it to your public domain in production).
+You do **not** need `AUTH_TRUST_HOST` or `AUTH_URL`. `src/auth.ts` sets
+`trustHost: true`, which is the right setting for a self-hosted app behind a
+trusted reverse proxy: Auth.js otherwise defaults it to false whenever
+`NODE_ENV=production` (as the Docker image sets it) and rejects every
+`/api/auth/*` request — and therefore every login — as `UntrustedHost`. The
+corollary is that whatever terminates TLS in front of the app must set
+`Host`/`X-Forwarded-Host` itself and not pass a client-supplied value
+through; `deploy/nginx.conf` does.
 
 ## Log retention
 

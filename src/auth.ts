@@ -4,6 +4,13 @@ import { redirect } from 'next/navigation';
 import { verifyCredentials } from '@/lib/auth-user';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  // Self-hosted behind a trusted reverse proxy, so the Host header is ours to
+  // trust. Without this, @auth/core defaults trustHost to
+  // `!!(AUTH_URL ?? AUTH_TRUST_HOST ?? VERCEL ?? CF_PAGES ?? NODE_ENV !== 'production')`
+  // — false in the shipped Docker image, which sets NODE_ENV=production — and
+  // every /api/auth/* call and every guarded /dashboard/* request fails with
+  // UntrustedHost. Nobody could log in to the documented deployment.
+  trustHost: true,
   // JWT sessions: the Credentials provider cannot use database sessions, and this
   // keeps session reads off the DB on every dashboard request.
   session: { strategy: 'jwt' },

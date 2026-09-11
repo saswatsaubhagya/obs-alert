@@ -23,6 +23,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
           push(': ping\n\n');
         } catch {
           clearInterval(ping);
+          unsubscribe();
         }
       }, 15_000);
     },

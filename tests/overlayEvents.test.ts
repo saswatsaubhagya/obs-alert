@@ -11,8 +11,13 @@ beforeEach(async () => {
 const params = (token: string) => ({ params: Promise.resolve({ token }) });
 
 test('an unknown token gives 404 and registers no subscriber', async () => {
+  const { user } = await makeUser();
   const res = await GET(new Request('http://localhost'), params('nope'));
   expect(res.status).toBe(404);
+  // Proves subscribe() never ran for the 404 path: a reorder that hoisted
+  // subscribe() above the early return would still 404 here but would leave
+  // a dangling subscription behind.
+  expect(countFor(user.id)).toBe(0);
 });
 
 test('a valid token opens an event-stream and subscribes the user', async () => {

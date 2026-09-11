@@ -9,7 +9,14 @@ export async function signupAction(_prev: unknown, form: FormData) {
   const password = String(form.get('password') ?? '');
   const r = await createUser(email, password);
   if ('error' in r) return { error: r.error };
-  await signIn('credentials', { email, password, redirect: false });
+  try {
+    await signIn('credentials', { email, password, redirect: false });
+  } catch {
+    // The account exists at this point; only sign-in failed. Send the user to
+    // log in themselves rather than surfacing a 500 for an account that was
+    // actually created successfully.
+    return { error: 'account created — please log in' };
+  }
   redirect('/dashboard');
 }
 

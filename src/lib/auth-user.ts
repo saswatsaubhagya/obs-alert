@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { hash, verify } from '@node-rs/argon2';
+import { Prisma } from '@prisma/client';
 import prisma from './db';
 
 const normalize = (email: string) => email.trim().toLowerCase();
@@ -16,14 +17,24 @@ export async function createUser(email: string, password: string) {
   if (await prisma.user.findUnique({ where: { email: e } })) {
     return { error: 'email already registered' };
   }
-  const user = await prisma.user.create({
-    data: {
-      email: e,
-      passwordHash: await hash(password), // argon2id is @node-rs/argon2's default
-      overlays: { create: { token: newOverlayToken() } },
-    },
-  });
-  return { id: user.id };
+  try {
+    const user = await prisma.user.create({
+      data: {
+        email: e,
+        passwordHash: await hash(password), // argon2id is @node-rs/argon2's default
+        overlays: { create: { token: newOverlayToken() } },
+      },
+    });
+    return { id: user.id };
+  } catch (err) {
+    // Backstop for a concurrent signup racing the pre-check above: without
+    // this, a duplicate email surfaces a raw P2002 instead of the friendly
+    // error the pre-check normally returns.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      return { error: 'email already registered' };
+    }
+    throw err;
+  }
 }
 
 export async function verifyCredentials(email: string, password: string) {

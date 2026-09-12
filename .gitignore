@@ -43,3 +43,8 @@ next-env.d.ts
 
 # superpowers
 .superpowers/
+
+# agent tooling — local dev setup, not part of the project
+.claude/
+.entire/
+docs/superpowers/

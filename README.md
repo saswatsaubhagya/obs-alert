@@ -264,3 +264,11 @@ Notable files:
   `formatValue`, the `message` exclusion, the duration clamp), deliberately
   free of Node built-ins so `src/lib/render.ts` on the server and the
   dashboard's live preview in the browser share one copy of it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -13,7 +13,9 @@ node_modules
 .next
 
 # Planning/task docs, not part of the running app.
-.superpowers
+.claude
+.entire
+docs/superpowers
 
 # Misc noise, mirroring .gitignore.
 .DS_Store

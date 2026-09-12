@@ -1,0 +1,5 @@
+so once i push it will build the docker image ?
+
+---
+
+ok i want to make it like that the day i push it will create the image name and release name with that day name like obs-alert 2026.9.12

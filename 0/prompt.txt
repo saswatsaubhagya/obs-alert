@@ -1,13 +1,1 @@
-so now we need to configure the github ci cd to generate docker image
-
----
-
-ok i ma making this repo open source . check everything looks good for public repo ?
-
----
-
-yes do it . make the LICENSE is like that anyone can use this without any issue. if you think i should not push the .claude or .entire then remove it . also remove the docs for superpower .
-
----
-
-also add a contribution file to this . anyone can contribute to it . add a guide
+yes

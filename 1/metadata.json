@@ -1,0 +1,66 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M29NS2EC27VKXBN336A83ZHQ",
+  "session_id": "e0298cbc-8803-4b43-969a-ff8d6a60fbb0",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-12T02:05:11.401385Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    ".dockerignore",
+    ".github/workflows/docker.yml",
+    ".gitignore",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "docs/superpowers/plans/2026-09-10-obs-alert-platform.md",
+    "docs/superpowers/specs/2026-09-10-obs-alert-platform-design.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "1888bfc346c6",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 80456,
+    "cache_read_tokens": 19001,
+    "output_tokens": 86,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-12T02:05:11.269525Z",
+    "agent_lines": 0,
+    "agent_removed": 3467,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 1,
+    "total_committed": 0,
+    "total_lines_changed": 3558,
+    "agent_percentage": 97.44238336143901,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 181,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".dockerignore": 3,
+        ".github/workflows/docker.yml": 44,
+        ".gitignore": 5,
+        "CONTRIBUTING.md": 100,
+        "LICENSE": 21,
+        "README.md": 8
+      },
+      "user_removed_per_file": {
+        ".dockerignore": 1
+      }
+    }
+  ]
+}

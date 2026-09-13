@@ -79,7 +79,13 @@ export default function SidePanel({ overlayUrl }: { overlayUrl: string | null })
         <Link href="/" className="brand" title="OBS Alert">
           <span className="sidebar-label">OBS Alert</span>
         </Link>
-        <button type="button" className="sidebar-toggle" onClick={toggle} aria-expanded={!collapsed}>
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
           {collapsed ? '»' : '«'}
         </button>
       </div>

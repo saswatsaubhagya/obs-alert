@@ -35,6 +35,9 @@ export default async function ApiDocs() {
 
   return (
     <div className="shell">
+      {/* overlayUrl is deliberately null: /docs sits outside the dashboard layout
+          and would need its own query for the overlay row just to show the
+          copy-URL button — not an oversight. */}
       {session?.user ? <SidePanel overlayUrl={null} /> : null}
       <div className="shell-main">
         <main className="editor docs" style={{ maxWidth: 900 }}>
@@ -130,7 +133,10 @@ export default async function ApiDocs() {
                 Number fields accept a JSON number or a numeric string (<code>&quot;25&quot;</code> → <code>25</code>);
                 anything non-finite is a 400.
               </li>
-              <li>String fields are trimmed and coerced; an object or array value is a 400.</li>
+              <li>
+                String fields must be a JSON string and are trimmed; a number, boolean, object, or array value
+                is a 400.
+              </li>
               <li>
                 <code>currency</code> is an ISO 4217 code used to format <code>amount</code>. An unknown code falls back
                 to plain number formatting rather than failing.

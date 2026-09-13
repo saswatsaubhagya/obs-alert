@@ -355,12 +355,16 @@ legend {
 }
 
 @media (max-width: 900px) {
-  .sidebar {
+  /* Narrow screens default to the collapsed rail, but an explicit
+     data-collapsed="false" (the user toggling it back open) still wins —
+     otherwise the collapse toggle renders, flips its glyph, and writes to
+     localStorage while visibly doing nothing. */
+  .sidebar:not([data-collapsed='false']) {
     width: 58px;
     flex-basis: 58px;
   }
-  .sidebar .sidebar-label,
-  .sidebar .sidebar-heading {
+  .sidebar:not([data-collapsed='false']) .sidebar-label,
+  .sidebar:not([data-collapsed='false']) .sidebar-heading {
     display: none;
   }
 }

@@ -138,8 +138,10 @@ never interpolated into the template text/title, so it is safe to contain
 | Follow | `follow` | `name` (string, **required**), `message` (string, optional) |
 | Subscription | `sub` | `name` (string, **required**), `months` (number, optional), `tier` (string, optional), `message` (string, optional) |
 | Raid | `raid` | `name` (string, **required**), `viewers` (number, optional), `message` (string, optional) |
+| Win | `win` | `opponent` (string, optional), `message` (string, optional) |
+| Loss | `lose` | `opponent` (string, optional), `message` (string, optional) |
 
-`win` and `lose` render as full-screen result animations on the same overlay URL instead of alert cards; the animation preset (`confetti`, `slam`, `glitch`) is configurable in the dashboard. Both accept optional `opponent` and `message` fields.
+`win` and `lose` render as full-screen result animations on the same overlay URL instead of alert cards; the animation preset (`confetti`, `slam`, `glitch`) is configurable in the dashboard.
 
 Each type's template text, title, colors, duration, image, and sound are
 configured per-account in the dashboard (`/dashboard`) and fall back to

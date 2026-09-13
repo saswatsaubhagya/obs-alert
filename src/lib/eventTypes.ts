@@ -3,7 +3,7 @@ export type Field = { name: string; type: FieldType; required: boolean };
 
 export type Widget = 'alerts' | 'result';
 export type Preset = 'confetti' | 'slam' | 'glitch';
-export const PRESETS: Preset[] = ['confetti', 'slam', 'glitch'];
+export const PRESETS: readonly Preset[] = ['confetti', 'slam', 'glitch'];
 
 export type Style = {
   accent: string;

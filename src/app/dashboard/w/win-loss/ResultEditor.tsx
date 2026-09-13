@@ -50,6 +50,11 @@ function toDraft(t: ResultType): Draft {
   };
 }
 
+// Same sample values testFireAction sends (see SAMPLES in alertConfig.ts), so
+// the preview shows the same lines a fired result does — including the
+// message line, which a real win/lose fire always carries.
+const SAMPLE_MESSAGE = 'this is a test alert';
+
 function draftToPatch(d: Draft): ConfigPatch {
   return {
     enabled: d.enabled,
@@ -97,16 +102,17 @@ export default function ResultEditor({
   // Debounced 200ms, same as the alert editor: OverlayClient's preview lane
   // replaces rather than queues, but there is no reason to post on every key.
   useEffect(() => {
-    if (!draft) return;
+    if (!draft || !selected) return;
+    const locale = selected.config.render.locale;
     const timer = setTimeout(() => {
-      const forTemplate = templateValues({ opponent: 'Team Red' });
+      const forTemplate = templateValues({ opponent: 'Team Red', message: SAMPLE_MESSAGE });
       const alert: AlertPayload = {
         id: 'preview',
         eventType: selectedKey,
         widget: 'result',
-        title: draft.titleTemplate ? renderTemplate(draft.titleTemplate, forTemplate, 'en-US') : '',
-        text: renderTemplate(draft.template, forTemplate, 'en-US'),
-        message: '',
+        title: draft.titleTemplate ? renderTemplate(draft.titleTemplate, forTemplate, locale) : '',
+        text: renderTemplate(draft.template, forTemplate, locale),
+        message: SAMPLE_MESSAGE,
         style: draft.style,
         durationMs: clampDuration(draft.durationMs),
         imageUrl: null,
@@ -117,7 +123,7 @@ export default function ResultEditor({
       if (win) win.postMessage({ kind: 'preview-alert', alert }, window.location.origin);
     }, 200);
     return () => clearTimeout(timer);
-  }, [draft, selectedKey, iframeReady, replay]);
+  }, [draft, selected, selectedKey, iframeReady, replay]);
 
   async function onSave() {
     setSaveStatus((s) => ({ ...s, [selectedKey]: 'saving…' }));

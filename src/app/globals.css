@@ -331,7 +331,7 @@ legend {
   white-space: nowrap;
   overflow: hidden;
 }
-.sidebar-item:hover {
+.sidebar-item:hover:not(:disabled) {
   color: var(--fg);
   background: rgba(255, 255, 255, 0.05);
   text-decoration: none;
@@ -346,12 +346,6 @@ legend {
   text-align: center;
   opacity: 0.9;
 }
-.sidebar-copy {
-  width: 100%;
-  margin-bottom: 6px;
-  font-size: 12px;
-}
-
 /* status text next to Save / Test fire */
 .status {
   font-size: 12.5px;

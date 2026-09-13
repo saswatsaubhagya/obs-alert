@@ -27,7 +27,7 @@ export default async function AlertsWidget() {
     <Editor
       types={types}
       overlayToken={overlay?.token ?? null}
-      overlayUrl={overlay ? `${base}/overlay/${overlay.token}` : null}
+      overlayUrl={overlay ? `${base}/overlay/${overlay.token}?w=alerts` : null}
       samples={samples}
     />
   );

@@ -1,5 +1,6 @@
 import { requireUserId } from '@/auth';
 import prisma from '@/lib/db';
+import { WIDGETS } from '@/lib/eventTypes';
 import CopyButton from '../CopyButton';
 import MaskedSecret from '../MaskedSecret';
 import { revokeKeyAction, rotateTokenAction, rotateControlTokenAction } from './actions';
@@ -16,28 +17,35 @@ export default async function Settings() {
       <header className="page-head">
         <div>
           <h1>Settings</h1>
-          <p className="muted">The overlay URL OBS reads from, and the keys your tools post alerts with.</p>
+          <p className="muted">One Browser Source URL per widget, and the keys your tools post alerts with.</p>
         </div>
       </header>
 
       <section className="card">
         <div className="card-head">
-          <h2>OBS Browser Source URL</h2>
+          <h2>OBS Browser Source URLs</h2>
         </div>
         <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
         {overlay ? (
           <>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <code style={{ wordBreak: 'break-all' }}>{`${base}/overlay/${overlay.token}`}</code>
-              <CopyButton value={`${base}/overlay/${overlay.token}`} label="Copy overlay URL" />
-            </div>
+            {WIDGETS.map((w) => {
+              const url = `${base}/overlay/${overlay.token}?w=${w.id}`;
+              return (
+                <div key={w.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <strong style={{ minWidth: 90 }}>{w.label}</strong>
+                  <code style={{ wordBreak: 'break-all' }}>{url}</code>
+                  <CopyButton value={url} label={`Copy ${w.label} URL`} />
+                </div>
+              );
+            })}
             <p className="muted">
-              Width 1920, Height 1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.
+              One Browser Source per widget — each URL renders only its own alerts. Width 1920, Height
+              1080. Tick &quot;Control audio via OBS&quot; so alert sounds reach the stream.
             </p>
             <form action={rotateTokenAction}>
               <button>Rotate overlay token</button>
             </form>
-            <p className="muted">Rotating breaks the URL currently in OBS — you will need to paste the new one.</p>
+            <p className="muted">Rotating breaks every widget URL currently in OBS — you will need to paste the new ones.</p>
           </>
         ) : (
           <p className="muted">No overlay has been set up for this account yet — contact support to have one created.</p>

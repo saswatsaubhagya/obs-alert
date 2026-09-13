@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { BUILT_IN, PRESETS } from '@/lib/eventTypes';
+import { BUILT_IN, PRESETS, WIDGETS, parseWidget } from '@/lib/eventTypes';
 
 test('every built-in type declares a widget, fields and defaults', () => {
   expect(Object.keys(BUILT_IN).sort()).toEqual([
@@ -44,4 +44,17 @@ test('every default template only references declared fields', () => {
 test('donation declares a required numeric amount', () => {
   const amount = BUILT_IN.donation.fields.find((f) => f.name === 'amount');
   expect(amount).toEqual({ name: 'amount', type: 'number', required: true });
+});
+
+test('parseWidget accepts only known widget ids, everything else is all-widgets', () => {
+  for (const w of WIDGETS) expect(parseWidget(w.id)).toBe(w.id);
+  for (const bad of [undefined, '', 'Alerts', 'result ', ['alerts'], 0, null, '__proto__']) {
+    expect(parseWidget(bad), String(bad)).toBe(null);
+  }
+});
+
+test('every widget in WIDGETS is a widget some event type actually renders', () => {
+  const used = new Set(Object.values(BUILT_IN).map((t) => t.widget));
+  for (const w of WIDGETS) expect(used.has(w.id), w.id).toBe(true);
+  expect(WIDGETS.length).toBe(used.size);
 });

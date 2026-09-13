@@ -137,9 +137,13 @@ prefix, never the key or the path.
 ## GET /api/overlay/&lt;overlay_token&gt;/events
 
 The Server-Sent Events stream the OBS Browser Source consumes. You normally
-never call this directly — you add `/overlay/<token>` as a Browser Source and
-its client opens this. Documented because reverse proxies need to be
-configured for it.
+never call this directly — you add `/overlay/<token>?w=<widget>` as a Browser
+Source and its client opens this. Documented because reverse proxies need to
+be configured for it.
+
+The stream carries every widget's frames; the `?w=` on the page URL (`alerts`
+or `result`) is what narrows one Browser Source to one widget. Omitting `w`
+renders all of them in a single source.
 
 - `200` with `content-type: text/event-stream`. Unknown token → `404
   {"error":"unknown overlay"}`.

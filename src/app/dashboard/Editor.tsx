@@ -106,15 +106,21 @@ export default function Editor({
   const lastFocused = useRef<'template' | 'titleTemplate'>('template');
   const templateRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  // ponytail: the preview only plays once the user asks for it — an edit or
+  // Replay. Without this the page fired an alert on load, which read as the
+  // overlay going off by itself.
+  const armed = useRef(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const selected = types.find((t) => t.key === selectedKey);
   const draft = drafts[selectedKey];
 
   function patchDraft(patch: Partial<Draft>) {
+    armed.current = true;
     setDrafts((d) => ({ ...d, [selectedKey]: { ...d[selectedKey], ...patch } }));
   }
   function patchStyle(patch: Partial<Style>) {
+    armed.current = true;
     setDrafts((d) => ({
       ...d,
       [selectedKey]: { ...d[selectedKey], style: { ...d[selectedKey].style, ...patch } },
@@ -135,7 +141,7 @@ export default function Editor({
   // queues) is what actually makes a *single* post safe to redisplay quickly —
   // this debounce only cuts down how often that replace happens.
   useEffect(() => {
-    if (!draft) return;
+    if (!draft || !armed.current) return;
     const timer = setTimeout(() => {
       const values = samples[selectedKey] ?? {};
       // Ruling 11: message never feeds text/title — it is not a template value.
@@ -420,7 +426,10 @@ export default function Editor({
           <section className="card">
             <div className="card-head">
               <h2>Preview</h2>
-              <button type="button" onClick={() => setReplay((n) => n + 1)} disabled={!overlayToken}>
+              <button type="button" onClick={() => {
+                  armed.current = true;
+                  setReplay((n) => n + 1);
+                }} disabled={!overlayToken}>
                 Replay
               </button>
             </div>
@@ -429,7 +438,7 @@ export default function Editor({
                 <div className="preview-stage" style={stageBg ? { background: stageBg } : undefined}>
                   <iframe
                     ref={iframeRef}
-                    src={`/overlay/${overlayToken}`}
+                    src={`/overlay/${overlayToken}?w=alerts`}
                     onLoad={() => setIframeReady((n) => n + 1)}
                     title="Overlay preview"
                   />

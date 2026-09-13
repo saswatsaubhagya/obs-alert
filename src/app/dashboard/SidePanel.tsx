@@ -3,18 +3,13 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSyncExternalStore } from 'react';
+import { WIDGETS } from '@/lib/eventTypes';
 import { signOutAction } from './actions';
-import CopyButton from './CopyButton';
 
 /** The signed-in chrome. Rendered by the dashboard layout, and by /docs (which
  *  sits outside that layout) whenever there is a session. Replaces Nav.tsx. */
 
-// One entry per widget. Adding a widget means adding a line here and a route
-// under /dashboard/w/.
-const WIDGETS = [
-  { href: '/dashboard/w/alerts', label: 'Alerts', icon: '◎' },
-  { href: '/dashboard/w/win-loss', label: 'Win / Loss', icon: '★' },
-];
+const ICONS: Record<string, string> = { alerts: '◎', result: '★' };
 
 const LINKS = [
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙' },
@@ -50,7 +45,7 @@ function subscribe(l: () => void) {
   return () => listeners.delete(l);
 }
 
-export default function SidePanel({ overlayUrl }: { overlayUrl: string | null }) {
+export default function SidePanel() {
   const pathname = usePathname();
   const collapsed = useSyncExternalStore(subscribe, readCollapsed, () => false);
 
@@ -92,16 +87,13 @@ export default function SidePanel({ overlayUrl }: { overlayUrl: string | null })
 
       <nav className="sidebar-group">
         <h2 className="sidebar-heading">Widgets</h2>
-        {WIDGETS.map(item)}
+        {WIDGETS.map((w) => item({ href: w.href, label: w.label, icon: ICONS[w.id] ?? '◎' }))}
       </nav>
 
       <div className="sidebar-foot">
-        {overlayUrl && !collapsed ? (
-          <CopyButton className="sidebar-copy" value={overlayUrl} label="Copy overlay URL" />
-        ) : null}
         {LINKS.map(item)}
         <form action={signOutAction}>
-          <button type="submit" className="sidebar-item" title="Sign out">
+          <button className="sidebar-item" title="Sign out">
             <span className="sidebar-icon" aria-hidden>
               ⏻
             </span>

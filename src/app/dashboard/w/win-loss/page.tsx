@@ -21,7 +21,7 @@ export default async function WinLossWidget() {
     <ResultEditor
       types={types}
       overlayToken={overlay?.token ?? null}
-      overlayUrl={overlay ? `${base}/overlay/${overlay.token}` : null}
+      overlayUrl={overlay ? `${base}/overlay/${overlay.token}?w=result` : null}
     />
   );
 }

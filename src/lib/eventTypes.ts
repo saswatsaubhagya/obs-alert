@@ -2,6 +2,20 @@ export type FieldType = 'string' | 'number';
 export type Field = { name: string; type: FieldType; required: boolean };
 
 export type Widget = 'alerts' | 'result';
+
+/** Every widget, in sidebar order. One overlay token serves them all; a
+ *  `?w=<id>` on the overlay URL narrows a Browser Source to a single widget,
+ *  so OBS can place the alert corner and the full-screen result in separate
+ *  sources. No `w` renders everything (the pre-widget-URL behaviour). */
+export const WIDGETS: readonly { id: Widget; label: string; href: string }[] = [
+  { id: 'alerts', label: 'Alerts', href: '/dashboard/w/alerts' },
+  { id: 'result', label: 'Win / Loss', href: '/dashboard/w/win-loss' },
+];
+
+/** Narrows an untrusted `?w=` value to a Widget, or null for "all widgets". */
+export function parseWidget(v: unknown): Widget | null {
+  return WIDGETS.some((w) => w.id === v) ? (v as Widget) : null;
+}
 export type Preset = 'confetti' | 'slam' | 'glitch';
 export const PRESETS: readonly Preset[] = ['confetti', 'slam', 'glitch'];
 

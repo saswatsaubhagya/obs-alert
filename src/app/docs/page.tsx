@@ -38,7 +38,7 @@ export default async function ApiDocs() {
       {/* overlayUrl is deliberately null: /docs sits outside the dashboard layout
           and would need its own query for the overlay row just to show the
           copy-URL button — not an oversight. */}
-      {session?.user ? <SidePanel overlayUrl={null} /> : null}
+      {session?.user ? <SidePanel /> : null}
       <div className="shell-main">
         <main className="editor docs" style={{ maxWidth: 900 }}>
           <header className="page-head">
@@ -190,6 +190,11 @@ export default async function ApiDocs() {
             <p>
               The Server-Sent Events stream the OBS Browser Source consumes. You do not normally call it yourself; it
               is documented because reverse proxies need configuring for it.
+            </p>
+            <p>
+              The stream carries every widget&apos;s frames. Add <code>?w=alerts</code> or <code>?w=result</code> to the{' '}
+              <code>/overlay/&lt;token&gt;</code> page URL to pin one Browser Source to one widget; with no{' '}
+              <code>w</code> the page renders all of them.
             </p>
             <ul>
               <li><code>200</code> <code>text/event-stream</code>; unknown token → <code>404 {'{"error":"unknown overlay"}'}</code>.</li>

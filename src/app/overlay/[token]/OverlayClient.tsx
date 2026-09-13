@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { createPreviewSlot, createQueue } from '@/lib/queue';
-import { PRESETS, type Preset } from '@/lib/eventTypes';
+import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -17,12 +17,24 @@ const POS: Record<string, string> = {
 
 const RESULT_PRESETS = new Set<Preset>(PRESETS);
 
-export default function OverlayClient({ token }: { token: string }) {
+export default function OverlayClient({
+  token,
+  widget,
+}: {
+  token: string;
+  widget: Widget | null;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+
+    /** A Browser Source pinned to one widget drops every other widget's
+     *  frames. `widget === null` is the all-widgets URL and accepts them all.
+     *  Applied to the live and preview lanes alike, so the dashboard preview
+     *  shows exactly what this source would show on stream. */
+    const accepts = (a: AlertPayload) => widget === null || a.widget === widget;
 
     /** Appends card to root, triggers animation, and handles audio.
      *  Returns the { card, audio } shape for scheduleHide to work on both
@@ -197,7 +209,8 @@ export default function OverlayClient({ token }: { token: string }) {
     const es = new EventSource(`/api/overlay/${token}/events`);
     es.onmessage = (e) => {
       try {
-        queue.push(JSON.parse(e.data) as AlertPayload);
+        const a = JSON.parse(e.data) as AlertPayload;
+        if (accepts(a)) queue.push(a);
       } catch {
         /* ignore a malformed frame */
       }
@@ -206,7 +219,9 @@ export default function OverlayClient({ token }: { token: string }) {
     // Dashboard live preview: same-origin parent posts a rendered alert.
     const onMessage = (e: MessageEvent) => {
       if (e.origin !== window.location.origin) return;
-      if (e.data?.kind === 'preview-alert') previewSlot.show(e.data.alert as AlertPayload);
+      if (e.data?.kind !== 'preview-alert') return;
+      const a = e.data.alert as AlertPayload;
+      if (accepts(a)) previewSlot.show(a);
     };
     window.addEventListener('message', onMessage);
 
@@ -215,7 +230,7 @@ export default function OverlayClient({ token }: { token: string }) {
       window.removeEventListener('message', onMessage);
       previewSlot.clear();
     };
-  }, [token]);
+  }, [token, widget]);
 
   return (
     <>

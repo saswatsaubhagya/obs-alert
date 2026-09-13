@@ -84,15 +84,21 @@ export default function ResultEditor({
   const [fireStatus, setFireStatus] = useState<Record<string, string>>({});
   const [iframeReady, setIframeReady] = useState(0);
   const [replay, setReplay] = useState(0);
+  // ponytail: the preview only plays once the user asks for it — an edit or
+  // Replay. Without this the page fired an alert on load, which read as the
+  // overlay going off by itself.
+  const armed = useRef(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const selected = types.find((t) => t.key === selectedKey);
   const draft = drafts[selectedKey];
 
   function patchDraft(patch: Partial<Draft>) {
+    armed.current = true;
     setDrafts((d) => ({ ...d, [selectedKey]: { ...d[selectedKey], ...patch } }));
   }
   function patchStyle(patch: Partial<Style>) {
+    armed.current = true;
     setDrafts((d) => ({
       ...d,
       [selectedKey]: { ...d[selectedKey], style: { ...d[selectedKey].style, ...patch } },
@@ -102,7 +108,7 @@ export default function ResultEditor({
   // Debounced 200ms, same as the alert editor: OverlayClient's preview lane
   // replaces rather than queues, but there is no reason to post on every key.
   useEffect(() => {
-    if (!draft || !selected) return;
+    if (!draft || !selected || !armed.current) return;
     const locale = selected.config.render.locale;
     const timer = setTimeout(() => {
       const forTemplate = templateValues({ opponent: 'Team Red', message: SAMPLE_MESSAGE });
@@ -259,7 +265,10 @@ export default function ResultEditor({
           <section className="card">
             <div className="card-head">
               <h2>Preview</h2>
-              <button type="button" onClick={() => setReplay((n) => n + 1)} disabled={!overlayToken}>
+              <button type="button" onClick={() => {
+                  armed.current = true;
+                  setReplay((n) => n + 1);
+                }} disabled={!overlayToken}>
                 Replay
               </button>
             </div>
@@ -267,7 +276,7 @@ export default function ResultEditor({
               <div className="preview-stage">
                 <iframe
                   ref={iframeRef}
-                  src={`/overlay/${overlayToken}`}
+                  src={`/overlay/${overlayToken}?w=result`}
                   onLoad={() => setIframeReady((n) => n + 1)}
                   title="Overlay preview"
                 />

@@ -3,7 +3,7 @@
   "checkpoint_id": "01M2D4MM76TM21VAE86AKZM8YE",
   "strategy": "manual-commit",
   "branch": "master",
-  "checkpoints_count": 7,
+  "checkpoints_count": 8,
   "files_touched": [
     "README.md",
     "prisma/migrations/20260913120000_add_score_counters/migration.sql",
@@ -50,13 +50,20 @@
       "compact_transcript": "/2/transcript.jsonl",
       "content_hash": "/2/content_hash.txt",
       "prompt": "/2/prompt.txt"
+    },
+    {
+      "metadata": "/3/metadata.json",
+      "transcript": "/3/full.jsonl",
+      "compact_transcript": "/3/transcript.jsonl",
+      "content_hash": "/3/content_hash.txt",
+      "prompt": "/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 148,
-    "cache_creation_tokens": 175501,
-    "cache_read_tokens": 6840609,
-    "output_tokens": 51684,
-    "api_call_count": 74
+    "input_tokens": 156,
+    "cache_creation_tokens": 196709,
+    "cache_read_tokens": 7036853,
+    "output_tokens": 53314,
+    "api_call_count": 78
   }
 }

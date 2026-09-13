@@ -1,0 +1,93 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2D4MM76TM21VAE86AKZM8YE",
+  "session_id": "9a19a698-fc21-4336-9035-b779687b072d",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T10:22:38.257337Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "README.md",
+    "prisma/schema.prisma",
+    "src/app/api/overlay/[token]/events/route.ts",
+    "src/app/control/[token]/Dock.tsx",
+    "src/app/dashboard/SidePanel.tsx",
+    "src/app/globals.css",
+    "src/app/overlay/[token]/OverlayClient.tsx",
+    "src/lib/alertConfig.ts",
+    "src/lib/controlFire.ts",
+    "src/lib/eventTypes.ts",
+    "tests/eventTypes.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "ec6beaff8382",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 8,
+    "cache_creation_tokens": 21208,
+    "cache_read_tokens": 196244,
+    "output_tokens": 1630,
+    "api_call_count": 4
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T10:22:38.239226Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 40,
+    "total_committed": 0,
+    "total_lines_changed": 40,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1117,
+      "user_lines_removed": 40,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "README.md": 14,
+        "prisma/migrations/20260913120000_add_score_counters/migration.sql": 3,
+        "prisma/migrations/20260913140000_add_score_config/migration.sql": 3,
+        "prisma/schema.prisma": 7,
+        "src/app/api/control/[token]/score/route.ts": 11,
+        "src/app/api/overlay/[token]/events/route.ts": 9,
+        "src/app/control/[token]/Dock.tsx": 82,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/dashboard/w/score/ScoreEditor.tsx": 209,
+        "src/app/dashboard/w/score/actions.ts": 36,
+        "src/app/dashboard/w/score/page.tsx": 20,
+        "src/app/globals.css": 55,
+        "src/app/overlay/[token]/OverlayClient.tsx": 187,
+        "src/lib/alertConfig.ts": 1,
+        "src/lib/control.ts": 28,
+        "src/lib/controlFire.ts": 13,
+        "src/lib/controlScore.ts": 57,
+        "src/lib/eventTypes.ts": 2,
+        "src/lib/score.ts": 53,
+        "src/lib/scoreConfig.ts": 126,
+        "tests/controlScore.test.ts": 108,
+        "tests/eventTypes.test.ts": 6,
+        "tests/scoreConfig.test.ts": 86
+      },
+      "user_removed_per_file": {
+        "src/app/api/overlay/[token]/events/route.ts": 1,
+        "src/app/control/[token]/Dock.tsx": 2,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/overlay/[token]/OverlayClient.tsx": 13,
+        "src/lib/alertConfig.ts": 1,
+        "src/lib/controlFire.ts": 18,
+        "src/lib/eventTypes.ts": 1,
+        "tests/eventTypes.test.ts": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+so login is not persistant . if i already logged in and navigae to the base url http://localhost:3000/ it is showing the landing page instade of dashboard. fix this
+
+---
+
+reload the docker

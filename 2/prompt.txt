@@ -1,0 +1,5 @@
+one thing i notice when we load the alert page or win loasde widget screen it automatically fire the animation . this is not the required beheviour . it should load only when user wish to test.
+
+---
+
+reload the docker

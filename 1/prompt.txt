@@ -1,0 +1,9 @@
+we can add an socials widgets Where the user can add it to social networking like Instagram, YouTube, kick or Twitch.The user can configure multiple accounts and it will have a rotating animation that disappears after a few seconds, continuously, fully configurable to the user's preference.
+
+---
+
+yes
+
+---
+
+reload docker

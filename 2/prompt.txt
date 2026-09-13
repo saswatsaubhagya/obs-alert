@@ -1,0 +1,13 @@
+with is the app there is no documentation for api . Please add documentation
+
+---
+
+i mean there should be api doc with the ui
+
+---
+
+i want this is also be the part of navbar once user logged in
+
+---
+
+i alredy logged in i only can see Alers and settings

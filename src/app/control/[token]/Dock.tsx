@@ -2,15 +2,17 @@
 
 import { useState, useSyncExternalStore } from 'react';
 import { describeResult } from '../../dashboard/describeResult';
+import { resolveOpponent } from './resolveOpponent';
 
 const OPPONENT_KEY = 'obsalert.dock.opponent';
 
-// A tiny store rather than an effect: useSyncExternalStore is the SSR-safe way
-// to read browser-only state, so the server snapshot (empty) and the first
-// client render agree without a second render pass. Same pattern as
-// dashboard/SidePanel.tsx's collapsed flag.
-const listeners = new Set<() => void>();
-
+// useSyncExternalStore (not an effect) supplies only the *initial* snapshot:
+// SSR-safe, so the server snapshot (empty) and the first client render agree
+// without a second render pass — same idea as dashboard/SidePanel.tsx's
+// collapsed flag. But unlike that flag, this store is not the source of
+// truth for what's on screen after mount: once the user types, `draft`
+// (below) takes over, so a `localStorage.setItem` throw (private mode,
+// quota, storage disabled) never makes the field snap back to a stale value.
 function readOpponent() {
   try {
     return localStorage.getItem(OPPONENT_KEY) ?? '';
@@ -23,26 +25,27 @@ function writeOpponent(v: string) {
   try {
     localStorage.setItem(OPPONENT_KEY, v);
   } catch {
-    /* ignore */
+    /* best effort — the typed value already lives in `draft` regardless */
   }
-  for (const l of listeners) l();
-}
-
-function subscribe(l: () => void) {
-  listeners.add(l);
-  return () => listeners.delete(l);
 }
 
 /** The OBS custom browser dock. No nav, no session, no side panel: this page
  *  renders inside a ~300px OBS panel and on a phone, and its only credential
  *  is the token in its own URL. */
 export default function Dock({ token }: { token: string }) {
-  const opponent = useSyncExternalStore(subscribe, readOpponent, () => '');
+  const stored = useSyncExternalStore(
+    () => () => {},
+    readOpponent,
+    () => ''
+  );
+  const [draft, setDraft] = useState<string | null>(null);
+  const opponent = resolveOpponent(draft, stored);
   const [status, setStatus] = useState('');
   const [firing, setFiring] = useState('');
 
   function onOpponent(v: string) {
-    writeOpponent(v);
+    setDraft(v); // what the user sees — never depends on storage succeeding
+    writeOpponent(v); // best effort; a throw is already swallowed inside
   }
 
   async function fire(type: 'win' | 'lose') {

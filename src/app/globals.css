@@ -12,6 +12,11 @@
   --accent-soft: rgba(124, 92, 255, 0.16);
   --danger: #ff6b81;
   --ok: #4ade80;
+  /* Mirror the win/lose event types' accent defaults (src/lib/eventTypes.ts)
+     so the control dock's buttons match the animation each one triggers —
+     not the general-purpose --ok/--danger tokens. */
+  --dock-win-accent: #31d0aa;
+  --dock-lose-accent: #ff5c8a;
   --radius: 10px;
   --font: var(--font-geist-sans), system-ui, sans-serif;
   --mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
@@ -885,18 +890,18 @@ input[type='color'].swatch::-moz-color-swatch {
   opacity: 0.5;
 }
 .dock-win {
-  background: rgba(49, 208, 170, 0.16);
-  border-color: rgba(49, 208, 170, 0.5);
+  background: color-mix(in srgb, var(--dock-win-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--dock-win-accent) 50%, transparent);
 }
 .dock-win:hover:not(:disabled) {
-  background: rgba(49, 208, 170, 0.28);
+  background: color-mix(in srgb, var(--dock-win-accent) 28%, transparent);
 }
 .dock-lose {
-  background: rgba(255, 92, 138, 0.16);
-  border-color: rgba(255, 92, 138, 0.5);
+  background: color-mix(in srgb, var(--dock-lose-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--dock-lose-accent) 50%, transparent);
 }
 .dock-lose:hover:not(:disabled) {
-  background: rgba(255, 92, 138, 0.28);
+  background: color-mix(in srgb, var(--dock-lose-accent) 28%, transparent);
 }
 .dock-field {
   display: grid;

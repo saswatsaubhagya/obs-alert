@@ -1,0 +1,13 @@
+add a win and loose counter as well . also add a increment decrement button in OBS control dock to manupulate the win loose count
+
+---
+
+redeploy the docker
+
+---
+
+add some cutomisation option for the win loose score . because some user might want we nned to show the win and loose text so add that as well
+
+---
+
+re deploy the docker

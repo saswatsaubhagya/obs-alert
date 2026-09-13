@@ -6,9 +6,8 @@ import prisma from '@/lib/db';
 import { POST as ingest } from '@/app/api/v1/alerts/[key]/route';
 import { GET as events } from '@/app/api/overlay/[token]/events/route';
 import { generateKey } from '@/lib/keys';
-import { __reset as resetHub, subscribe } from '@/lib/hub';
+import { __reset as resetHub } from '@/lib/hub';
 import { __reset as resetRl } from '@/lib/ratelimit';
-import { sendAlert } from '@/lib/sendAlert';
 import { makeUser, resetDb } from './helpers/db';
 
 beforeEach(async () => {
@@ -90,19 +89,22 @@ test('an overlay token is not an ingest key and an ingest key is not an overlay 
 });
 
 test('a win posted to the ingest API arrives as a result frame', async () => {
-  const { user } = await makeUser();
-  const frames: unknown[] = [];
-  const unsubscribe = subscribe(user.id, (frame) => {
-    frames.push(JSON.parse(frame.replace(/^data: /, '')));
-  });
+  const { overlay, plain } = await seed();
 
-  const r = await sendAlert(user.id, { type: 'win', opponent: 'Team Red' }, 'api');
-  unsubscribe();
+  const sse = await openOverlay(overlay.token);
+  const reader = sse.body!.getReader();
+  const decode = async () => new TextDecoder().decode((await reader.read()).value);
+  expect(await decode()).toContain(': connected');
 
-  expect(r.status).toBe(200);
-  expect(frames).toHaveLength(1);
-  const frame = frames[0] as { widget: string; text: string; style: { preset: string } };
-  expect(frame.widget).toBe('result');
-  expect(frame.text).toBe('VICTORY');
-  expect(frame.style.preset).toBe('confetti');
+  const res = await post(plain, { type: 'win', opponent: 'Team Red' });
+  expect(res.status).toBe(200);
+
+  const frame = await decode();
+  expect(frame.startsWith('data: ')).toBe(true);
+  const payload = JSON.parse(frame.slice(6));
+  expect(payload.widget).toBe('result');
+  expect(payload.text).toBe('VICTORY');
+  expect(payload.style.preset).toBe('confetti');
+
+  await reader.cancel();
 });

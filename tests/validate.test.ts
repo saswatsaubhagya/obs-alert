@@ -53,3 +53,14 @@ test('keeps donor text verbatim — escaping is the renderer and overlay job', (
   const r = validatePayload(donation, { name: '<script>alert(1)</script>', amount: 1 });
   expect(r.ok && r.values.name).toBe('<script>alert(1)</script>');
 });
+
+const win = BUILT_IN.win.fields;
+
+test('a win payload with both optional fields absent is valid', () => {
+  expect(validatePayload(win, {})).toEqual({ ok: true, values: {} });
+});
+
+test('a numeric opponent is rejected', () => {
+  const r = validatePayload(win, { opponent: 42 });
+  expect(r).toEqual({ ok: false, error: 'field "opponent" must be a string' });
+});

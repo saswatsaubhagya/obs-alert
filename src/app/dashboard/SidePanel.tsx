@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { signOutAction } from './actions';
 import CopyButton from './CopyButton';
 
@@ -23,32 +23,39 @@ const LINKS = [
 
 const KEY = 'obsalert.sidebar.collapsed';
 
+// A tiny store rather than an effect: useSyncExternalStore is the SSR-safe way
+// to read browser-only state, so the server snapshot (expanded) and the first
+// client render agree without a second render pass.
+const listeners = new Set<() => void>();
+
+function readCollapsed() {
+  try {
+    return localStorage.getItem(KEY) === '1';
+  } catch {
+    return false; // private mode / storage disabled — stay expanded
+  }
+}
+
+function writeCollapsed(v: boolean) {
+  try {
+    localStorage.setItem(KEY, v ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+  for (const l of listeners) l();
+}
+
+function subscribe(l: () => void) {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
+
 export default function SidePanel({ overlayUrl }: { overlayUrl: string | null }) {
   const pathname = usePathname();
-  // Read in an effect, not in the initializer: the server renders expanded, so
-  // reading localStorage during the first client render would be a hydration
-  // mismatch.
-  const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => {
-    try {
-      // Intentional: this is the one-time post-hydration read described above,
-      // not an external-store subscription — there is nothing to subscribe to.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCollapsed(localStorage.getItem(KEY) === '1');
-    } catch {
-      /* private mode / storage disabled — stay expanded */
-    }
-  }, []);
+  const collapsed = useSyncExternalStore(subscribe, readCollapsed, () => false);
 
   function toggle() {
-    setCollapsed((c) => {
-      try {
-        localStorage.setItem(KEY, c ? '0' : '1');
-      } catch {
-        /* ignore */
-      }
-      return !c;
-    });
+    writeCollapsed(!collapsed);
   }
 
   const item = (l: { href: string; label: string; icon: string }) => (

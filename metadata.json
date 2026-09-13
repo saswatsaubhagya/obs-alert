@@ -3,19 +3,31 @@
   "checkpoint_id": "01M2D4MM76TM21VAE86AKZM8YE",
   "strategy": "manual-commit",
   "branch": "master",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "README.md",
+    "prisma/migrations/20260913120000_add_score_counters/migration.sql",
+    "prisma/migrations/20260913140000_add_score_config/migration.sql",
     "prisma/schema.prisma",
+    "src/app/api/control/[token]/score/route.ts",
     "src/app/api/overlay/[token]/events/route.ts",
     "src/app/control/[token]/Dock.tsx",
     "src/app/dashboard/SidePanel.tsx",
+    "src/app/dashboard/w/score/ScoreEditor.tsx",
+    "src/app/dashboard/w/score/actions.ts",
+    "src/app/dashboard/w/score/page.tsx",
     "src/app/globals.css",
     "src/app/overlay/[token]/OverlayClient.tsx",
     "src/lib/alertConfig.ts",
+    "src/lib/control.ts",
     "src/lib/controlFire.ts",
+    "src/lib/controlScore.ts",
     "src/lib/eventTypes.ts",
-    "tests/eventTypes.test.ts"
+    "src/lib/score.ts",
+    "src/lib/scoreConfig.ts",
+    "tests/controlScore.test.ts",
+    "tests/eventTypes.test.ts",
+    "tests/scoreConfig.test.ts"
   ],
   "sessions": [
     {
@@ -24,13 +36,20 @@
       "compact_transcript": "/0/transcript.jsonl",
       "content_hash": "/0/content_hash.txt",
       "prompt": "/0/prompt.txt"
+    },
+    {
+      "metadata": "/1/metadata.json",
+      "transcript": "/1/full.jsonl",
+      "compact_transcript": "/1/transcript.jsonl",
+      "content_hash": "/1/content_hash.txt",
+      "prompt": "/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 28,
-    "cache_creation_tokens": 34417,
-    "cache_read_tokens": 847947,
-    "output_tokens": 7310,
-    "api_call_count": 14
+    "input_tokens": 30,
+    "cache_creation_tokens": 75934,
+    "cache_read_tokens": 872138,
+    "output_tokens": 7540,
+    "api_call_count": 15
   }
 }

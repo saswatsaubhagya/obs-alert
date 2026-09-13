@@ -19,6 +19,16 @@ test('rejects an unknown event type and lists the known ones', async () => {
   expect((r.body as { known: string[] }).known).toContain('donation');
 });
 
+// I5's siblings: BUILT_IN is a plain object literal, so a prototype-chain key
+// like `toString` is truthy against a bare `BUILT_IN[key]` lookup and would
+// throw past this guard instead of 400ing.
+test('a prototype-chain key like "toString" is a 400, not a 500', async () => {
+  const { user } = await makeUser();
+  const r = await sendAlert(user.id, { type: 'toString' }, 'api');
+  expect(r.status).toBe(400);
+  expect(r.body).toMatchObject({ error: 'unknown event type' });
+});
+
 test('rejects a missing required field and names the type', async () => {
   const { user } = await makeUser();
   const r = await sendAlert(user.id, { type: 'donation', name: 'bob' }, 'api');
@@ -61,6 +71,16 @@ test('succeeds with delivered 0 when no overlay is connected, and still logs', a
   expect(log?.renderedText).toBe('bob donated $500.00!');
   expect(log?.deliveredTo).toBe(0);
   expect(log?.source).toBe('api');
+});
+
+test('a successful win send writes exactly one AlertLog row for that user', async () => {
+  const { user } = await makeUser();
+  const r = await sendAlert(user.id, { type: 'win', opponent: 'Team Red' }, 'api');
+  expect(r.status).toBe(200);
+
+  const logs = await prisma.alertLog.findMany({ where: { userId: user.id } });
+  expect(logs).toHaveLength(1);
+  expect(logs[0].eventTypeKey).toBe('win');
 });
 
 test('a disabled type returns 202 skipped and publishes nothing', async () => {

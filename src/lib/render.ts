@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Style } from './eventTypes';
+import { BUILT_IN, type Style, type Widget } from './eventTypes';
 import { clampDuration, renderTemplate, templateValues } from './template';
 import type { Values } from './validate';
 
@@ -23,6 +23,7 @@ export type RenderConfig = {
 export type AlertPayload = {
   id: string;
   eventType: string;
+  widget: Widget;
   title: string;
   text: string;
   message: string;
@@ -46,6 +47,10 @@ export function renderAlert(input: {
   return {
     id: randomUUID(),
     eventType: eventTypeKey,
+    // Which renderer the overlay should use for this frame. Unknown keys
+    // cannot reach here through sendAlert (it 400s first), so the fallback is
+    // only for direct callers in tests.
+    widget: BUILT_IN[eventTypeKey]?.widget ?? 'alerts',
     title: config.titleTemplate ? renderTemplate(config.titleTemplate, forTemplate, config.locale) : '',
     text: renderTemplate(config.template, forTemplate, config.locale),
     message,

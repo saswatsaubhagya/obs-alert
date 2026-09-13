@@ -107,3 +107,40 @@ test('an unknown event type is a 400, not a throw', async () => {
   const fire = await sendFromDashboard(user.id, { type: 'nope', ...sampleValues('nope') }, 'test');
   expect(fire.status).toBe(400);
 });
+
+// I5's siblings: BUILT_IN is a plain object literal, so `BUILT_IN['toString']`
+// is truthy against a bare lookup and would throw out of this 'use server'
+// path instead of returning a 400-shaped result.
+test('a prototype-chain key like "toString" is a 400, not a throw, and writes no row', async () => {
+  const { user } = await makeUser();
+  expect(await saveConfigFor(user.id, 'toString', { template: 'x' })).toEqual({
+    ok: false,
+    status: 400,
+    error: 'unknown event type',
+  });
+  expect(await prisma.alertConfig.count({ where: { userId: user.id } })).toBe(0);
+});
+
+test('a known preset is saved', async () => {
+  const { user } = await makeUser();
+  const r = await saveConfigFor(user.id, 'win', { style: { preset: 'slam' } } as ConfigPatch);
+  expect(r.ok).toBe(true);
+  expect((await effectiveConfig(user.id, 'win')).render.style.preset).toBe('slam');
+});
+
+test('an unknown preset is rejected and nothing is written', async () => {
+  const { user } = await makeUser();
+  const r = await saveConfigFor(user.id, 'win', { style: { preset: 'explode' } } as unknown as ConfigPatch);
+  expect(r).toEqual({ ok: false, status: 400, error: 'style.preset is not a known animation preset' });
+  expect(await prisma.alertConfig.count({ where: { userId: user.id } })).toBe(0);
+});
+
+test('a userId smuggled beside a preset is still dropped', async () => {
+  const attacker = await makeUser();
+  const victim = await makeUser();
+  const r = await saveConfigFor(attacker.user.id, 'win', {
+    style: { preset: 'glitch', userId: victim.user.id },
+  } as unknown as ConfigPatch);
+  expect(r.ok).toBe(true);
+  expect(await prisma.alertConfig.count({ where: { userId: victim.user.id } })).toBe(0);
+});

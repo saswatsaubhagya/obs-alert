@@ -2,7 +2,7 @@
 // so they are unit-testable without dragging in next/cache or Auth.js.
 // Mirrors src/lib/settings.ts.
 import prisma from './db';
-import { BUILT_IN, type Style } from './eventTypes';
+import { BUILT_IN, PRESETS, type Style } from './eventTypes';
 import { sendAlert, type Source } from './sendAlert';
 
 export type ConfigPatch = Partial<{
@@ -73,6 +73,12 @@ function cleanStyle(input: unknown): { ok: true; style: Partial<Style> } | { ok:
   if (input.anim !== undefined) {
     if (!ANIMS.includes(input.anim as Style['anim'])) return { ok: false, error: 'style.anim is not a known animation' };
     out.anim = input.anim;
+  }
+  if (input.preset !== undefined) {
+    if (!PRESETS.includes(input.preset as Style['preset'])) {
+      return { ok: false, error: 'style.preset is not a known animation preset' };
+    }
+    out.preset = input.preset;
   }
   // Every other key — `userId` included — is dropped here.
   return { ok: true, style: out as Partial<Style> };
@@ -154,10 +160,14 @@ export async function saveConfigFor(
   eventTypeKey: string,
   patch: unknown
 ): Promise<SaveResult> {
-  const t = BUILT_IN[eventTypeKey];
   // eventTypeKey is wire input too: an unknown key must be a 400, not a throw
   // that surfaces to the client as an opaque server-action digest error.
-  if (!t) return { ok: false, status: 400, error: 'unknown event type' };
+  // `Object.hasOwn` (not `BUILT_IN[eventTypeKey]`) because a plain object
+  // literal makes `BUILT_IN['toString']`/`['constructor']`/`['__proto__']`
+  // truthy — those keys pass a truthiness check but have no `.defaults`,
+  // which then throws instead of returning this 400.
+  if (!Object.hasOwn(BUILT_IN, eventTypeKey)) return { ok: false, status: 400, error: 'unknown event type' };
+  const t = BUILT_IN[eventTypeKey];
 
   const cleaned = cleanConfigPatch(patch);
   if (!cleaned.ok) return { ok: false, status: 400, error: cleaned.error };
@@ -193,6 +203,7 @@ const SAMPLES: Record<string, string | number> = {
   months: 3,
   tier: '1',
   viewers: 42,
+  opponent: 'Team Red',
 };
 
 /** Returns `{}` for an unknown key rather than throwing: the only caller is

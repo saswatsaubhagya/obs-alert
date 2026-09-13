@@ -40,7 +40,11 @@ export async function sendAlert(userId: string, body: unknown, source: Source): 
   }
   const { type, ...rest } = body as Record<string, unknown>;
   const key = typeof type === 'string' ? type : '';
-  if (!BUILT_IN[key]) {
+  // `Object.hasOwn`, not `BUILT_IN[key]`: BUILT_IN is a plain object literal,
+  // so a prototype-chain key like `toString`/`constructor`/`__proto__` is
+  // truthy against a bare lookup and would fall through to `.fields`/
+  // `.defaults` being undefined below — a 500 instead of this 400.
+  if (!Object.hasOwn(BUILT_IN, key)) {
     return { status: 400, body: { error: 'unknown event type', known: EVENT_TYPE_KEYS } };
   }
 

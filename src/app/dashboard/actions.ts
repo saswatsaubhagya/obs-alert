@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { requireUserId } from '@/auth';
+import { requireUserId, signOut } from '@/auth';
 import {
   sampleValues,
   saveConfigFor,
@@ -20,7 +20,8 @@ export async function saveConfigAction(eventTypeKey: string, patch: ConfigPatch)
   // 400-shaped result rather than throwing.
   const result = await saveConfigFor(userId, eventTypeKey, patch);
   if (!result.ok) return result;
-  revalidatePath('/dashboard');
+  revalidatePath('/dashboard/w/alerts');
+  revalidatePath('/dashboard/w/win-loss');
   return result;
 }
 
@@ -34,4 +35,8 @@ export async function manualSendAction(form: FormData) {
   const body: Record<string, unknown> = {};
   for (const [k, v] of form.entries()) if (typeof v === 'string' && v) body[k] = v;
   return sendFromDashboard(userId, body, 'dashboard');
+}
+
+export async function signOutAction() {
+  await signOut({ redirectTo: '/login' });
 }

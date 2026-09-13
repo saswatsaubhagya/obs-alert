@@ -87,3 +87,24 @@ test('an overlay token is not an ingest key and an ingest key is not an overlay 
   expect(asToken.status).toBe(404);
   expect(await asToken.json()).toEqual({ error: 'unknown overlay' });
 });
+
+test('a win posted to the ingest API arrives as a result frame', async () => {
+  const { overlay, plain } = await seed();
+
+  const sse = await openOverlay(overlay.token);
+  const reader = sse.body!.getReader();
+  const decode = async () => new TextDecoder().decode((await reader.read()).value);
+  expect(await decode()).toContain(': connected');
+
+  const res = await post(plain, { type: 'win', opponent: 'Team Red' });
+  expect(res.status).toBe(200);
+
+  const frame = await decode();
+  expect(frame.startsWith('data: ')).toBe(true);
+  const payload = JSON.parse(frame.slice(6));
+  expect(payload.widget).toBe('result');
+  expect(payload.text).toBe('VICTORY');
+  expect(payload.style.preset).toBe('confetti');
+
+  await reader.cancel();
+});

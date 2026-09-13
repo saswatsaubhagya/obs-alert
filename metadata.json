@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2D2M0CSK71E3YN0ADBR6HPF",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/api.md",
+    "src/app/dashboard/Editor.tsx",
+    "src/app/dashboard/SidePanel.tsx",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/settings/page.tsx",
+    "src/app/dashboard/w/alerts/page.tsx",
+    "src/app/dashboard/w/win-loss/ResultEditor.tsx",
+    "src/app/dashboard/w/win-loss/page.tsx",
+    "src/app/docs/page.tsx",
+    "src/app/globals.css",
+    "src/app/overlay/[token]/OverlayClient.tsx",
+    "src/app/overlay/[token]/page.tsx",
+    "src/lib/eventTypes.ts",
+    "tests/eventTypes.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 29922,
+    "cache_read_tokens": 19001,
+    "output_tokens": 203,
+    "api_call_count": 1
+  }
+}

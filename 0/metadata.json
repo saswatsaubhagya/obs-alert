@@ -1,0 +1,92 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2D2M0CSK71E3YN0ADBR6HPF",
+  "session_id": "50a5021b-2eee-4195-aecf-1e25199958a8",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T09:47:19.643536Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "docs/api.md",
+    "src/app/dashboard/Editor.tsx",
+    "src/app/dashboard/SidePanel.tsx",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/settings/page.tsx",
+    "src/app/dashboard/w/alerts/page.tsx",
+    "src/app/dashboard/w/win-loss/ResultEditor.tsx",
+    "src/app/dashboard/w/win-loss/page.tsx",
+    "src/app/docs/page.tsx",
+    "src/app/globals.css",
+    "src/app/overlay/[token]/OverlayClient.tsx",
+    "src/app/overlay/[token]/page.tsx",
+    "src/lib/eventTypes.ts",
+    "tests/eventTypes.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "36dc29737fb9",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 29922,
+    "cache_read_tokens": 19001,
+    "output_tokens": 203,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T09:47:19.616806Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 53,
+    "total_committed": 0,
+    "total_lines_changed": 53,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 120,
+      "user_lines_removed": 53,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "docs/api.md": 7,
+        "src/app/dashboard/Editor.tsx": 12,
+        "src/app/dashboard/SidePanel.tsx": 5,
+        "src/app/dashboard/layout.tsx": 2,
+        "src/app/dashboard/settings/page.tsx": 16,
+        "src/app/dashboard/w/alerts/page.tsx": 1,
+        "src/app/dashboard/w/win-loss/ResultEditor.tsx": 12,
+        "src/app/dashboard/w/win-loss/page.tsx": 1,
+        "src/app/docs/page.tsx": 6,
+        "src/app/globals.css": 1,
+        "src/app/overlay/[token]/OverlayClient.tsx": 20,
+        "src/app/overlay/[token]/page.tsx": 9,
+        "src/lib/eventTypes.ts": 14,
+        "tests/eventTypes.test.ts": 14
+      },
+      "user_removed_per_file": {
+        "docs/api.md": 3,
+        "src/app/dashboard/Editor.tsx": 3,
+        "src/app/dashboard/SidePanel.tsx": 13,
+        "src/app/dashboard/layout.tsx": 5,
+        "src/app/dashboard/settings/page.tsx": 8,
+        "src/app/dashboard/w/alerts/page.tsx": 1,
+        "src/app/dashboard/w/win-loss/ResultEditor.tsx": 3,
+        "src/app/dashboard/w/win-loss/page.tsx": 1,
+        "src/app/docs/page.tsx": 1,
+        "src/app/globals.css": 7,
+        "src/app/overlay/[token]/OverlayClient.tsx": 5,
+        "src/app/overlay/[token]/page.tsx": 2,
+        "tests/eventTypes.test.ts": 1
+      }
+    }
+  ]
+}

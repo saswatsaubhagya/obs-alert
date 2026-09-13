@@ -952,6 +952,28 @@ input[type='color'].swatch::-moz-color-swatch {
 .dock-reset:disabled {
   opacity: 0.4;
 }
+/* The timer block reuses the score block's chrome; only the step buttons
+   differ, since "Pause" and "+1m" do not fit a 38px square. */
+.dock-timer {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  justify-items: stretch;
+}
+.dock-timer .dock-count-value {
+  font-size: 30px;
+}
+.dock-timer .dock-buttons {
+  grid-template-columns: repeat(3, 1fr);
+}
+.dock-timer .dock-step {
+  width: auto;
+  padding: 0 8px;
+  font-size: 15px;
+}
+
 .dock-field {
   display: grid;
   gap: 6px;

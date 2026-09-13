@@ -1,10 +1,15 @@
 'use client';
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { formatClock } from '@/lib/timerConfig';
 import { describeResult } from '../../dashboard/describeResult';
 import { resolveOpponent } from './resolveOpponent';
 
 const OPPONENT_KEY = 'obsalert.dock.opponent';
+
+const MIN = 60_000;
+/** The lengths a break actually takes. Anything else is the dashboard's job. */
+const PRESETS_MIN = [5, 10, 15];
 
 // useSyncExternalStore (not an effect) supplies only the *initial* snapshot:
 // SSR-safe, so the server snapshot (empty) and the first client render agree
@@ -43,6 +48,9 @@ export default function Dock({ token }: { token: string }) {
   const [status, setStatus] = useState('');
   const [firing, setFiring] = useState('');
   const [score, setScore] = useState<{ wins: number; losses: number } | null>(null);
+  const [timer, setTimer] = useState<{ running: boolean; remainingMs: number; at: number } | null>(null);
+  // What the clock reads now: advanced by the interval below, never in render.
+  const [left, setLeft] = useState(0);
 
   // The dock is the thing people click, so it shows the same tally the
   // scoreboard widget shows. Server-owned: every response carries the new
@@ -59,6 +67,31 @@ export default function Dock({ token }: { token: string }) {
       live = false;
     };
   }, [token]);
+
+  // Same server-owned rule as the score: every timer response carries the whole
+  // state, and the dock ticks locally from when it arrived rather than trusting
+  // this machine's clock to match the server's.
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/control/${token}/timer`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((t) => {
+        if (!live || !t) return;
+        setTimer({ running: t.running, remainingMs: t.remainingMs, at: Date.now() });
+        setLeft(t.remainingMs);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!timer?.running) return;
+    const { remainingMs, at } = timer;
+    const id = setInterval(() => setLeft(Math.max(0, remainingMs - (Date.now() - at))), 250);
+    return () => clearInterval(id);
+  }, [timer]);
 
   function onOpponent(v: string) {
     setDraft(v); // what the user sees — never depends on storage succeeding
@@ -100,6 +133,31 @@ export default function Dock({ token }: { token: string }) {
       const body = await res.json();
       if (res.ok) setScore(body);
       else setStatus(describeResult({ status: res.status, body }));
+    } catch {
+      setStatus('could not reach the server — is it running?');
+    } finally {
+      setFiring('');
+    }
+  }
+
+  /** Same shape as nudge(): the server returns the new clock, the dock never
+   *  computes one locally. */
+  async function timerAction(action: 'start' | 'pause' | 'resume' | 'add' | 'reset', ms = 0) {
+    setFiring(`timer:${action}${ms}`);
+    setStatus('');
+    try {
+      const res = await fetch(`/api/control/${token}/timer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(action === 'start' || action === 'add' ? { type: action, ms } : { type: action }),
+      });
+      const body = await res.json();
+      if (res.ok) {
+        setTimer({ running: body.running, remainingMs: body.remainingMs, at: Date.now() });
+        setLeft(body.remainingMs);
+      } else {
+        setStatus(describeResult({ status: res.status, body }));
+      }
     } catch {
       setStatus('could not reach the server — is it running?');
     } finally {
@@ -164,6 +222,61 @@ export default function Dock({ token }: { token: string }) {
             disabled={firing !== '' || (score.wins === 0 && score.losses === 0)}
           >
             Reset
+          </button>
+        </div>
+      ) : null}
+
+      {timer ? (
+        <div className="dock-timer">
+          <span className="dock-count-value">{formatClock(left)}</span>
+          <div className="dock-buttons">
+            {PRESETS_MIN.map((m) => (
+              <button
+                key={m}
+                type="button"
+                className="dock-step"
+                onClick={() => timerAction('start', m * MIN)}
+                disabled={firing !== ''}
+              >
+                {m}m
+              </button>
+            ))}
+          </div>
+          <div className="dock-buttons">
+            <button
+              type="button"
+              className="dock-step"
+              onClick={() => timerAction('add', -MIN)}
+              disabled={firing !== '' || left === 0}
+              aria-label="One minute less"
+            >
+              −1m
+            </button>
+            <button
+              type="button"
+              className="dock-step"
+              onClick={() => timerAction(timer.running ? 'pause' : 'resume')}
+              disabled={firing !== '' || left === 0}
+            >
+              {timer.running ? 'Pause' : 'Resume'}
+            </button>
+            <button
+              type="button"
+              className="dock-step"
+              onClick={() => timerAction('add', MIN)}
+              disabled={firing !== ''}
+              aria-label="One minute more"
+            >
+              +1m
+            </button>
+          </div>
+          <button
+            type="button"
+            className="dock-reset"
+            onClick={() => timerAction('reset')}
+            disabled={firing !== '' || (!timer.running && left === 0)}
+          >
+            Clear timer
           </button>
         </div>
       ) : null}

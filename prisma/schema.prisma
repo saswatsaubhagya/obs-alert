@@ -14,21 +14,28 @@ datasource db {
 }
 
 model User {
-  id           String        @id @default(cuid())
-  email        String        @unique
-  passwordHash String
-  createdAt    DateTime      @default(now())
+  id               String        @id @default(cuid())
+  email            String        @unique
+  passwordHash     String
+  createdAt        DateTime      @default(now())
   // The scoreboard widget's running tally. One per user, like the hub room
   // alerts fan out to, so every overlay of a user shows the same score.
-  wins         Int           @default(0)
-  losses       Int           @default(0)
+  wins             Int           @default(0)
+  losses           Int           @default(0)
   // The scoreboard's appearance (labels, colours, position). Json, because it
   // is read and written whole by src/lib/scoreConfig.ts and never queried.
-  scoreConfig  Json?
-  overlays     Overlay[]
-  ingestKeys   IngestKey[]
-  alertConfigs AlertConfig[]
-  alertLogs    AlertLog[]
+  scoreConfig      Json?
+  // The timer widget. `timerEndsAt` non-null means a countdown is running and
+  // ends at that instant; null means stopped or paused, with whatever is left
+  // parked in `timerRemainingMs`. Appearance lives in `timerConfig`, read and
+  // written whole by src/lib/timerConfig.ts.
+  timerEndsAt      DateTime?
+  timerRemainingMs Int           @default(0)
+  timerConfig      Json?
+  overlays         Overlay[]
+  ingestKeys       IngestKey[]
+  alertConfigs     AlertConfig[]
+  alertLogs        AlertLog[]
 }
 
 model Overlay {

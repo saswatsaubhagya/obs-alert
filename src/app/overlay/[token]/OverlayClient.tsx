@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { createPreviewSlot, createQueue } from '@/lib/queue';
 import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
 import { parseScoreConfig, type ScoreConfig } from '@/lib/scoreConfig';
+import { formatClock, parseTimerConfig, type TimerConfig } from '@/lib/timerConfig';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -105,6 +106,60 @@ export default function OverlayClient({
       board.parts.wLabel.textContent = c.winLabel;
       board.parts.lLabel.textContent = c.lossLabel;
       board.el.dataset.labels = c.showLabels ? 'on' : 'off';
+    };
+
+    /** The timer: like the scoreboard, one element updated in place and never
+     *  removed — but it also has to keep moving between frames, so the server
+     *  sends `remainingMs` as of the moment it published and this ticks down
+     *  locally from when the frame arrived. Nothing here reads the server's
+     *  wall clock, so a streaming PC whose clock is minutes off still counts
+     *  down correctly. */
+    let clock: { el: HTMLDivElement; label: HTMLElement; time: HTMLElement } | null = null;
+    let ticking: ReturnType<typeof setInterval> | undefined;
+    let timerState: { running: boolean; remainingMs: number; at: number; config: TimerConfig } | null = null;
+
+    const paintTimer = () => {
+      if (!timerState || !clock) return;
+      const { running, remainingMs, at, config: c } = timerState;
+      const left = running ? Math.max(0, remainingMs - (Date.now() - at)) : remainingMs;
+      const done = left <= 0;
+      clock.el.dataset.hidden = done && c.hideAtZero ? 'on' : 'off';
+      clock.time.textContent = done && c.endText ? c.endText : formatClock(left, c.format);
+      clock.label.textContent = c.label;
+      clock.el.dataset.labels = c.showLabel && c.label ? 'on' : 'off';
+      // The warning colour is for the run-in to zero, not for a finished clock.
+      clock.el.dataset.warn = !done && c.warnAtSec > 0 && left <= c.warnAtSec * 1000 ? 'on' : 'off';
+    };
+
+    const showTimer = (running: boolean, remainingMs: number, raw: unknown) => {
+      // The config arrives over the wire; parseTimerConfig falls back to the
+      // defaults per field rather than letting a bad value reach cssText.
+      const c: TimerConfig = parseTimerConfig(raw);
+      if (!clock) {
+        const el = document.createElement('div');
+        el.className = 'timer';
+        const label = document.createElement('div');
+        label.className = 'timer-label';
+        const time = document.createElement('div');
+        time.className = 'timer-time';
+        el.append(label, time);
+        root.append(el);
+        clock = { el, label, time };
+        // A quarter of a second: the seconds digit never looks stuck, and the
+        // cost is four textContent writes a second in a Browser Source.
+        ticking = setInterval(paintTimer, 250);
+      }
+      clock.el.style.cssText = [
+        POS[c.pos] ?? POS.top,
+        `--fg:${c.color}`,
+        `--warn:${c.warnColor}`,
+        `--label:${c.labelColor}`,
+        `--bg:${c.bg}`,
+        `--font:${c.font}`,
+        `--size:${c.size}px`,
+      ].join(';');
+      timerState = { running, remainingMs: Math.max(0, remainingMs), at: Date.now(), config: c };
+      paintTimer();
     };
 
     /** Appends card to root, triggers animation, and handles audio.
@@ -334,6 +389,11 @@ export default function OverlayClient({
           showScore(f.wins ?? 0, f.losses ?? 0, f.config);
           return;
         }
+        if (a.widget === 'timer') {
+          const f = a as unknown as { running?: boolean; remainingMs?: number; config?: unknown };
+          showTimer(f.running === true, f.remainingMs ?? 0, f.config);
+          return;
+        }
         queue.push(a);
       } catch {
         /* ignore a malformed frame */
@@ -354,6 +414,11 @@ export default function OverlayClient({
         showScore(f.wins ?? 0, f.losses ?? 0, f.config);
         return;
       }
+      if (a.widget === 'timer') {
+        const f = a as unknown as { running?: boolean; remainingMs?: number; config?: unknown };
+        showTimer(f.running === true, f.remainingMs ?? 0, f.config);
+        return;
+      }
       previewSlot.show(a);
     };
     window.addEventListener('message', onMessage);
@@ -362,6 +427,7 @@ export default function OverlayClient({
       es.close();
       window.removeEventListener('message', onMessage);
       previewSlot.clear();
+      clearInterval(ticking);
     };
   }, [token, widget]);
 
@@ -391,6 +457,18 @@ export default function OverlayClient({
         .score[data-labels="off"] .score-label{display:none}
         .score-w{color:var(--win)} .score-l{color:var(--loss)}
         .score-sep{color:var(--label);opacity:.45}
+
+        .timer{position:fixed;display:grid;justify-items:center;gap:.1em;
+          padding:.18em .5em;border-radius:.22em;background:var(--bg);
+          font-family:var(--font);font-size:var(--size);font-weight:900;
+          line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+          color:var(--fg)}
+        .timer[data-hidden="on"]{display:none}
+        .timer-label{font-size:.22em;font-weight:800;letter-spacing:.2em;
+          text-transform:uppercase;color:var(--label);opacity:.75;white-space:nowrap}
+        .timer[data-labels="off"] .timer-label{display:none}
+        .timer[data-warn="on"] .timer-time{color:var(--warn);animation:timer-pulse 1s ease-in-out infinite}
+        @keyframes timer-pulse{50%{opacity:.55}}
 
         .result{position:fixed;inset:0;display:grid;place-items:center;
           font-family:var(--font);color:var(--fg);opacity:0;transition:opacity .3s}

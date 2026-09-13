@@ -1,6 +1,7 @@
 import prisma from '@/lib/db';
 import { subscribe } from '@/lib/hub';
 import { getScore } from '@/lib/score';
+import { getTimer } from '@/lib/timer';
 
 export const dynamic = 'force-dynamic'; // never cache or prerender a live stream
 
@@ -9,10 +10,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
   const overlay = await prisma.overlay.findUnique({ where: { token } });
   if (!overlay) return Response.json({ error: 'unknown overlay' }, { status: 404 });
 
-  // The scoreboard is continuous state, not an event: a Browser Source that
-  // connects (or reconnects mid-stream) has to be told the current tally, or
-  // it shows nothing until the next click.
-  const score = await getScore(overlay.userId);
+  // The scoreboard and the timer are continuous state, not events: a Browser
+  // Source that connects (or reconnects mid-stream) has to be told the current
+  // tally and the current clock, or it shows nothing until the next click.
+  const [score, timer] = await Promise.all([getScore(overlay.userId), getTimer(overlay.userId)]);
 
   const encoder = new TextEncoder();
   let unsubscribe = () => {};
@@ -23,7 +24,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string 
       const push = (frame: string) => controller.enqueue(encoder.encode(frame));
       // One chunk, so the first frame a client reads is still the comment and
       // the score rides along with it rather than shifting every later frame.
-      push(`: connected\n\ndata: ${JSON.stringify({ widget: 'score', ...score })}\n\n`);
+      push(
+        `: connected\n\n` +
+          `data: ${JSON.stringify({ widget: 'score', ...score })}\n\n` +
+          `data: ${JSON.stringify({ widget: 'timer', ...timer })}\n\n`
+      );
       unsubscribe = subscribe(overlay.userId, push);
       // Keeps intermediary proxies from idling the connection out.
       ping = setInterval(() => {

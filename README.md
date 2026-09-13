@@ -97,6 +97,23 @@ with a live preview. It is server-held state, not an alert: a source that opens
 pushed to every overlay of the account. The score moves from the OBS control
 dock, or automatically when a result is fired from it.
 
+## The timer widget
+
+**Timer** in the sidebar has its own Browser Source URL
+(`/overlay/<token>?w=timer`) showing a countdown that stays on screen — a
+break, a "starting soon" clock, a giveaway window. It is customisable from
+that page: the label above the clock (text, or hidden), the clock format
+(`auto`, `mm:ss`, `hh:mm:ss`), what to show at 00:00 (text, or hide the widget),
+a warning colour that takes over under a chosen number of seconds left, plus
+colours, background, font, size and screen position, with a live preview.
+
+Like the scoreboard it is server-held state: the clock is started, paused,
+resumed, nudged by ±1/±5 minutes and cleared from the widget page or the OBS
+control dock, and every overlay of the account is told at once. Each frame
+carries the time remaining as of the moment it was sent and the overlay counts
+down locally from there, so a streaming PC whose clock disagrees with the
+server's still shows the right time. A single countdown is capped at 24 hours.
+
 ## Firing an alert
 
 `POST` a JSON body describing the event to either of these, using the

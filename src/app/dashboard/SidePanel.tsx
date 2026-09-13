@@ -9,7 +9,7 @@ import { signOutAction } from './actions';
 /** The signed-in chrome. Rendered by the dashboard layout, and by /docs (which
  *  sits outside that layout) whenever there is a session. Replaces Nav.tsx. */
 
-const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#' };
+const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#', timer: '⏱' };
 
 const LINKS = [
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙' },

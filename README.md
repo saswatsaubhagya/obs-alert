@@ -72,6 +72,17 @@ The overlay itself is transparent; position/scale the source however you
 like. It reconnects on its own if the server restarts or the connection
 drops.
 
+## The OBS control dock (optional)
+
+Settings also shows a dock URL (`/control/<control token>`) that adds a small
+panel with WIN/LOSE buttons to fire result widgets on demand — useful during
+a live match when you'd rather click a button than wait on an integration.
+Add it in OBS via **Docks → Custom Browser Docks**, pasting the dock URL. The
+control token is a separate credential from the overlay token above — it is
+a *write* credential, so treat it like a password: never put it in a browser
+source, never show it on stream, and rotate it from Settings if it ever
+leaks.
+
 ## Firing an alert
 
 `POST` a JSON body describing the event to either of these, using the

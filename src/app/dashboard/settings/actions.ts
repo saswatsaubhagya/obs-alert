@@ -6,6 +6,7 @@ import {
   createIngestKeyFor,
   revokeIngestKeyFor,
   rotateOverlayTokenFor,
+  rotateControlTokenFor,
 } from '@/lib/settings';
 
 // Form entrances: session-authenticated wrappers over src/lib/settings.ts.
@@ -26,5 +27,11 @@ export async function revokeKeyAction(form: FormData) {
 export async function rotateTokenAction() {
   const userId = await requireUserId();
   await rotateOverlayTokenFor(userId);
+  revalidatePath('/dashboard/settings');
+}
+
+export async function rotateControlTokenAction() {
+  const userId = await requireUserId();
+  await rotateControlTokenFor(userId);
   revalidatePath('/dashboard/settings');
 }

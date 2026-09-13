@@ -1,7 +1,7 @@
 import { requireUserId } from '@/auth';
 import prisma from '@/lib/db';
 import CopyButton from '../CopyButton';
-import { revokeKeyAction, rotateTokenAction } from './actions';
+import { revokeKeyAction, rotateTokenAction, rotateControlTokenAction } from './actions';
 import CreateKeyForm from './CreateKeyForm';
 
 export default async function Settings() {
@@ -41,6 +41,36 @@ export default async function Settings() {
         ) : (
           <p className="muted">No overlay has been set up for this account yet — contact support to have one created.</p>
         )}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>OBS control dock</h2>
+        </div>
+        <div className="card-body" style={{ gap: 12, paddingBottom: 18, paddingTop: 16 }}>
+          {overlay ? (
+            <>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <code style={{ wordBreak: 'break-all' }}>{`${base}/control/${overlay.controlToken}`}</code>
+                <CopyButton value={`${base}/control/${overlay.controlToken}`} label="Copy dock URL" />
+              </div>
+              <p className="muted">
+                In OBS: Docks → Custom Browser Docks, paste this URL, and dock the panel wherever you like.
+                The same URL works in any browser, including a phone.
+              </p>
+              <p className="muted">
+                <strong>Anyone with this URL can fire alerts on your stream.</strong> It is not the overlay
+                URL — never put it in a browser source, never show it on stream, never share it.
+              </p>
+              <form action={rotateControlTokenAction}>
+                <button>Rotate control token</button>
+              </form>
+              <p className="muted">Rotating breaks the dock currently pinned in OBS — paste the new URL.</p>
+            </>
+          ) : (
+            <p className="muted">No overlay has been set up for this account yet.</p>
+          )}
         </div>
       </section>
 

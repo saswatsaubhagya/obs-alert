@@ -10,6 +10,11 @@ export function newOverlayToken() {
   return randomBytes(32).toString('base64url');
 }
 
+/** Control-dock tokens are the same shape as overlay tokens — 32 random bytes,
+ *  base64url — but a different credential with a different blast radius, so
+ *  they get their own name at every call site. */
+export const newControlToken = newOverlayToken;
+
 export async function createUser(email: string, password: string) {
   const e = normalize(email);
   if (!EMAIL.test(e)) return { error: 'invalid email' };
@@ -22,7 +27,7 @@ export async function createUser(email: string, password: string) {
       data: {
         email: e,
         passwordHash: await hash(password), // argon2id is @node-rs/argon2's default
-        overlays: { create: { token: newOverlayToken() } },
+        overlays: { create: { token: newOverlayToken(), controlToken: newControlToken() } },
       },
     });
     return { id: user.id };

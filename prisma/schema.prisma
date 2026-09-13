@@ -25,12 +25,16 @@ model User {
 }
 
 model Overlay {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  token     String   @unique
-  name      String   @default("Main")
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String   @unique
+  // A write credential: it authorizes POST /api/control/{controlToken}/fire.
+  // Separate from `token` (read-only overlay subscription) so it can be
+  // rotated on its own when a dock URL leaks.
+  controlToken String   @unique
+  name         String   @default("Main")
+  createdAt    DateTime @default(now())
 }
 
 model IngestKey {

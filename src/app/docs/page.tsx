@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { auth } from '@/auth';
 import { BUILT_IN, EVENT_TYPE_KEYS } from '@/lib/eventTypes';
-import Nav from '../Nav';
+import SidePanel from '../dashboard/SidePanel';
 
 export const metadata = { title: 'API reference — OBS Alert' };
 
@@ -34,9 +34,10 @@ export default async function ApiDocs() {
   const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
 
   return (
-    <>
-      {session?.user ? <Nav /> : null}
-      <main className="editor docs" style={{ maxWidth: 900 }}>
+    <div className="shell">
+      {session?.user ? <SidePanel overlayUrl={null} /> : null}
+      <div className="shell-main">
+        <main className="editor docs" style={{ maxWidth: 900 }}>
         <header className="page-head">
           <div>
             <h1>API reference</h1>
@@ -211,6 +212,7 @@ export default async function ApiDocs() {
           </p>
         </Section>
       </main>
-    </>
+      </div>
+    </div>
   );
 }

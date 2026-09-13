@@ -1,0 +1,5 @@
+please add some more animation to win and loose animation . in win we can add like from 4 side the confeti will be pumbed and it should be different color and some falling animation . like we might do some more for loose as well.
+
+---
+
+reload docker

@@ -247,9 +247,8 @@ export default function OverlayClient({ token }: { token: string }) {
         .result.in .result-ring{animation:ring .7s ease-out forwards}
         @keyframes ring{from{opacity:.7;scale:.2}to{opacity:0;scale:9}}
 
-        .preset-slam .result-inner,.preset-confetti .result-inner{scale:2.6;opacity:0}
         .preset-slam.in .result-inner,.preset-confetti.in .result-inner{
-          animation:slam .38s cubic-bezier(.2,1.5,.4,1) forwards}
+          animation:slam .38s cubic-bezier(.2,1.5,.4,1) both}
         @keyframes slam{from{scale:2.6;opacity:0}60%{scale:.94;opacity:1}to{scale:1;opacity:1}}
 
         .confetti-bit{position:absolute;top:-4vh;width:10px;height:16px;

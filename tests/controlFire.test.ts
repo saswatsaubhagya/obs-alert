@@ -67,9 +67,18 @@ test('a non-result event type is refused and writes no log row', async () => {
 });
 
 test('a prototype-chain type is a 400, not a 500', async () => {
-  const { overlay } = await makeUser();
+  const { user, overlay } = await makeUser();
   const res = await handleControlFire(post({ type: 'toString' }), overlay.controlToken);
   expect(res.status).toBe(400);
+  expect(await prisma.alertLog.count({ where: { userId: user.id } })).toBe(0);
+});
+
+test('a body over 64KB is a 413, not forwarded to sendAlert', async () => {
+  const { overlay } = await makeUser();
+  const big = 'x'.repeat(64 * 1024 + 1);
+  const res = await handleControlFire(post({ type: 'win', opponent: big }), overlay.controlToken);
+  expect(res.status).toBe(413);
+  expect(await res.json()).toEqual({ error: 'body too large' });
 });
 
 test('message in the request body never reaches the rendered frame or the AlertLog payload', async () => {

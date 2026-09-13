@@ -1,0 +1,80 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2D2M0CSK71E3YN0ADBR6HPF",
+  "session_id": "fdfa2488-aa04-4bc8-b263-af680cae354e",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T09:47:20.676029Z",
+  "branch": "master",
+  "checkpoints_count": 2,
+  "save_step_count": 2,
+  "files_touched": [
+    "docs/api.md",
+    "src/app/dashboard/Editor.tsx",
+    "src/app/dashboard/SidePanel.tsx",
+    "src/app/dashboard/layout.tsx",
+    "src/app/dashboard/settings/page.tsx",
+    "src/app/dashboard/w/alerts/page.tsx",
+    "src/app/dashboard/w/win-loss/ResultEditor.tsx",
+    "src/app/dashboard/w/win-loss/page.tsx",
+    "src/app/docs/page.tsx",
+    "src/app/globals.css",
+    "src/app/overlay/[token]/OverlayClient.tsx",
+    "src/app/overlay/[token]/page.tsx",
+    "src/lib/eventTypes.ts",
+    "tests/eventTypes.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "45559c6f63a4",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 72,
+    "cache_creation_tokens": 55504,
+    "cache_read_tokens": 2704324,
+    "output_tokens": 12703,
+    "api_call_count": 36
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T09:47:20.645041Z",
+    "agent_lines": 90,
+    "agent_removed": 47,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 6,
+    "total_committed": 90,
+    "total_lines_changed": 143,
+    "agent_percentage": 95.8041958041958,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 24,
+      "user_lines_removed": 6,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "src/app/dashboard/Editor.tsx": 11,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/dashboard/w/win-loss/ResultEditor.tsx": 11,
+        "src/app/globals.css": 1
+      },
+      "user_removed_per_file": {
+        "src/app/dashboard/Editor.tsx": 2,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/dashboard/w/win-loss/ResultEditor.tsx": 2,
+        "src/app/globals.css": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 120,
+      "agent_lines_removed": 53
+    }
+  ]
+}

@@ -72,6 +72,48 @@ test('a prototype-chain type is a 400, not a 500', async () => {
   expect(res.status).toBe(400);
 });
 
+test('message in the request body never reaches the rendered frame or the AlertLog payload', async () => {
+  const { user, overlay } = await makeUser();
+  const frames: string[] = [];
+  subscribe(user.id, (f) => frames.push(f));
+
+  const res = await handleControlFire(
+    post({ type: 'win', opponent: 'Team Red', message: 'ARBITRARY TEXT ON STREAM' }),
+    overlay.controlToken
+  );
+  expect(res.status).toBe(200);
+
+  const frame = JSON.parse(frames[0].slice(6));
+  expect(frame.message).toBe('');
+  expect(JSON.stringify(frame)).not.toContain('ARBITRARY TEXT ON STREAM');
+
+  const logs = await prisma.alertLog.findMany({ where: { userId: user.id } });
+  expect(logs).toHaveLength(1);
+  expect(JSON.stringify(logs[0].payload)).not.toContain('ARBITRARY TEXT ON STREAM');
+});
+
+test('an over-long opponent is truncated to 120 characters rather than rejected', async () => {
+  const { overlay } = await makeUser();
+  const long = 'a'.repeat(200);
+  const res = await handleControlFire(post({ type: 'win', opponent: long }), overlay.controlToken);
+  expect(res.status).toBe(200);
+
+  const logs = await prisma.alertLog.findMany();
+  const payload = logs[logs.length - 1].payload as { opponent?: string };
+  expect(payload.opponent).toHaveLength(120);
+  expect(payload.opponent).toBe('a'.repeat(120));
+});
+
+test('a normal opponent still arrives intact', async () => {
+  const { overlay } = await makeUser();
+  const res = await handleControlFire(post({ type: 'win', opponent: 'Team Red' }), overlay.controlToken);
+  expect(res.status).toBe(200);
+
+  const logs = await prisma.alertLog.findMany();
+  const payload = logs[logs.length - 1].payload as { opponent?: string };
+  expect(payload.opponent).toBe('Team Red');
+});
+
 test('a body that is not a JSON object is a 400', async () => {
   const { overlay } = await makeUser();
   expect((await handleControlFire(post('not json'), overlay.controlToken)).status).toBe(400);

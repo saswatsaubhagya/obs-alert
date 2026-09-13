@@ -8,6 +8,7 @@ import { take } from './ratelimit';
 import { sendAlert } from './sendAlert';
 
 const MAX_BODY = 64 * 1024;
+const OPPONENT_MAX = 120;
 
 /** Derived, never hardcoded: a new result-widget type is fireable from the
  *  dock the moment it exists, and an alert type never becomes fireable. */
@@ -60,7 +61,18 @@ export async function handleControlFire(req: Request, token: string): Promise<Re
       );
     }
 
-    const result = await sendAlert(overlay.userId, parsed, 'control');
+    const opponent = (parsed as Record<string, unknown>).opponent;
+    // Allow-list, not pass-through: the caller's body is wire input from a URL
+    // credential that is easy to leak, and every field forwarded is something a
+    // leaked dock can put on screen. `message` is deliberately NOT forwarded —
+    // the dock does not send it, and it renders as its own line on the overlay.
+    const body = {
+      type: key,
+      ...(typeof opponent === 'string' && opponent.trim()
+        ? { opponent: opponent.trim().slice(0, OPPONENT_MAX) }
+        : {}),
+    };
+    const result = await sendAlert(overlay.userId, body, 'control');
     console.log(`control ${overlay.id} -> ${result.status}`);
     return Response.json(result.body, { status: result.status });
   } catch (err) {

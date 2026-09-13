@@ -2,7 +2,7 @@
 // so they are unit-testable without dragging in next/cache or Auth.js.
 import prisma from './db';
 import { generateKey } from './keys';
-import { newOverlayToken } from './auth-user';
+import { newControlToken, newOverlayToken } from './auth-user';
 
 export async function createIngestKeyFor(userId: string, name: string) {
   const k = generateKey();
@@ -31,4 +31,13 @@ export async function rotateOverlayTokenFor(userId: string) {
   const token = newOverlayToken();
   await prisma.overlay.updateMany({ where: { userId }, data: { token } });
   return { token };
+}
+
+export async function rotateControlTokenFor(userId: string) {
+  // Same single-overlay caveat as rotateOverlayTokenFor above: updateMany
+  // would set one new token across all of a user's overlays if multi-overlay
+  // is ever built, and would need an overlayId parameter then.
+  const controlToken = newControlToken();
+  await prisma.overlay.updateMany({ where: { userId }, data: { controlToken } });
+  return { controlToken };
 }

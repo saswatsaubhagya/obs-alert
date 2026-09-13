@@ -4,7 +4,7 @@ import { publish } from './hub';
 import { renderAlert, type RenderConfig } from './render';
 import { validatePayload } from './validate';
 
-export type Source = 'api' | 'dashboard' | 'test';
+export type Source = 'api' | 'dashboard' | 'test' | 'control';
 
 export type SendResult =
   | { status: 200; body: { ok: true; alertId: string; delivered: number } }

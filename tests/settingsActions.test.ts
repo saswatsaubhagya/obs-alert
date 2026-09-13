@@ -4,11 +4,17 @@ import {
   createIngestKeyFor,
   revokeIngestKeyFor,
   rotateOverlayTokenFor,
+  rotateControlTokenFor,
 } from '@/lib/settings';
 import { hashKey, resolveKey } from '@/lib/keys';
+import { handleControlFire } from '@/lib/controlFire';
+import { __reset as resetRl } from '@/lib/ratelimit';
 import { makeUser, resetDb } from './helpers/db';
 
-beforeEach(resetDb);
+beforeEach(async () => {
+  resetRl();
+  await resetDb();
+});
 
 test('creates a usable key and stores only its hash and prefix', async () => {
   const { user } = await makeUser();
@@ -65,4 +71,36 @@ test('rotating the overlay token invalidates the old one', async () => {
   expect(token).not.toBe(overlay.token);
   expect(await prisma.overlay.findUnique({ where: { token: overlay.token } })).toBeNull();
   expect((await prisma.overlay.findUnique({ where: { token } }))!.userId).toBe(user.id);
+});
+
+test('rotating the control token replaces it', async () => {
+  const { user, overlay } = await makeUser();
+  const { controlToken } = await rotateControlTokenFor(user.id);
+  expect(controlToken).not.toBe(overlay.controlToken);
+
+  const row = await prisma.overlay.findFirst({ where: { userId: user.id } });
+  expect(row?.controlToken).toBe(controlToken);
+});
+
+test('rotating the control token leaves the overlay token alone', async () => {
+  const { user, overlay } = await makeUser();
+  await rotateControlTokenFor(user.id);
+  const row = await prisma.overlay.findFirst({ where: { userId: user.id } });
+  expect(row?.token).toBe(overlay.token);
+});
+
+test('the old control token stops firing once rotated', async () => {
+  const { user, overlay } = await makeUser();
+  await rotateControlTokenFor(user.id);
+
+  const res = await handleControlFire(
+    new Request('http://localhost/api/control/x/fire', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'win' }),
+    }),
+    overlay.controlToken
+  );
+  expect(res.status).toBe(401);
+  expect(await prisma.alertLog.count({ where: { userId: user.id } })).toBe(0);
 });

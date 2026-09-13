@@ -52,6 +52,8 @@ export default async function ApiDocs() {
           </header>
 
           <Section id="endpoints" title="Endpoints">
+            {/* POST /api/control/<token>/fire is deliberately omitted: the dock is
+                not a general remote-control API, so it gets no row here. */}
             <div className="docs-scroll">
               <table>
                 <thead>

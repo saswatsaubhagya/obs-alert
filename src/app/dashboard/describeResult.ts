@@ -9,6 +9,7 @@ export function describeResult(r: { status: number; body: unknown }): string {
     const b = r.body as { skipped: string };
     return `202 — skipped: ${b.skipped}`;
   }
-  const b = r.body as { error: string };
-  return `400 — ${b.error}`;
+  // The real status, not a hardcoded 400: the control dock also sees 401, 413,
+  // 429 and 500. Identical output for the dashboard's only failure case.
+  return `${r.status} — ${(r.body as { error: string }).error}`;
 }

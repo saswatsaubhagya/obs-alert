@@ -1,6 +1,10 @@
 export type FieldType = 'string' | 'number';
 export type Field = { name: string; type: FieldType; required: boolean };
 
+export type Widget = 'alerts' | 'result';
+export type Preset = 'confetti' | 'slam' | 'glitch';
+export const PRESETS: Preset[] = ['confetti', 'slam', 'glitch'];
+
 export type Style = {
   accent: string;
   bg: string;
@@ -11,6 +15,10 @@ export type Style = {
   width: number;
   radius: number;
   anim: 'fade' | 'slide' | 'pop';
+  // Only read by the result widget's full-screen renderer; the alert card
+  // ignores it. Lives in the existing Json `style` column, so adding it needs
+  // no migration.
+  preset: Preset;
 };
 
 export type ConfigDefaults = {
@@ -30,14 +38,19 @@ export const BASE_STYLE: Style = {
   width: 640,
   radius: 16,
   anim: 'fade',
+  preset: 'slam',
 };
 
 const s = (name: string, required = false): Field => ({ name, type: 'string', required });
 const n = (name: string, required = false): Field => ({ name, type: 'number', required });
 
-export const BUILT_IN: Record<string, { label: string; fields: Field[]; defaults: ConfigDefaults }> = {
+export const BUILT_IN: Record<
+  string,
+  { label: string; widget: Widget; fields: Field[]; defaults: ConfigDefaults }
+> = {
   donation: {
     label: 'Donation',
+    widget: 'alerts',
     fields: [s('name', true), n('amount', true), s('currency'), s('message')],
     defaults: {
       template: '{name} donated {amount}!',
@@ -48,6 +61,7 @@ export const BUILT_IN: Record<string, { label: string; fields: Field[]; defaults
   },
   follow: {
     label: 'Follow',
+    widget: 'alerts',
     fields: [s('name', true), s('message')],
     defaults: {
       template: '{name} just followed!',
@@ -58,6 +72,7 @@ export const BUILT_IN: Record<string, { label: string; fields: Field[]; defaults
   },
   sub: {
     label: 'Subscription',
+    widget: 'alerts',
     fields: [s('name', true), n('months'), s('tier'), s('message')],
     defaults: {
       template: '{name} subscribed!',
@@ -68,12 +83,35 @@ export const BUILT_IN: Record<string, { label: string; fields: Field[]; defaults
   },
   raid: {
     label: 'Raid',
+    widget: 'alerts',
     fields: [s('name', true), n('viewers'), s('message')],
     defaults: {
       template: '{name} raided with {viewers} viewers!',
       titleTemplate: 'RAID',
       style: { ...BASE_STYLE, accent: '#ff5c8a' },
       durationMs: 5000,
+    },
+  },
+  win: {
+    label: 'Win',
+    widget: 'result',
+    fields: [s('opponent'), s('message')],
+    defaults: {
+      template: 'VICTORY',
+      titleTemplate: 'MATCH RESULT',
+      style: { ...BASE_STYLE, accent: '#31d0aa', size: 96, preset: 'confetti' },
+      durationMs: 4000,
+    },
+  },
+  lose: {
+    label: 'Loss',
+    widget: 'result',
+    fields: [s('opponent'), s('message')],
+    defaults: {
+      template: 'DEFEAT',
+      titleTemplate: 'MATCH RESULT',
+      style: { ...BASE_STYLE, accent: '#ff5c8a', size: 96, preset: 'glitch' },
+      durationMs: 4000,
     },
   },
 };

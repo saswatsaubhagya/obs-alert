@@ -193,6 +193,7 @@ const SAMPLES: Record<string, string | number> = {
   months: 3,
   tier: '1',
   viewers: 42,
+  opponent: 'Team Red',
 };
 
 /** Returns `{}` for an unknown key rather than throwing: the only caller is

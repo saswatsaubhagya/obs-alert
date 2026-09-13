@@ -1,6 +1,7 @@
 import { requireUserId } from '@/auth';
 import prisma from '@/lib/db';
 import CopyButton from '../CopyButton';
+import MaskedSecret from '../MaskedSecret';
 import { revokeKeyAction, rotateTokenAction, rotateControlTokenAction } from './actions';
 import CreateKeyForm from './CreateKeyForm';
 
@@ -52,7 +53,7 @@ export default async function Settings() {
           {overlay ? (
             <>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <code style={{ wordBreak: 'break-all' }}>{`${base}/control/${overlay.controlToken}`}</code>
+                <MaskedSecret value={`${base}/control/${overlay.controlToken}`} />
                 <CopyButton value={`${base}/control/${overlay.controlToken}`} label="Copy dock URL" />
               </div>
               <p className="muted">

@@ -29,7 +29,8 @@ export default function OverlayClient({ token }: { token: string }) {
      *  renderers identically. */
     const presentCard = (card: HTMLDivElement, a: AlertPayload) => {
       root.append(card);
-      requestAnimationFrame(() => card.classList.add('in'));
+      void card.offsetHeight; // force reflow so the transition runs from the pre-`in` state
+      card.classList.add('in');
 
       let audio: HTMLAudioElement | undefined;
       if (a.soundUrl) {

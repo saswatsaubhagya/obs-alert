@@ -1,0 +1,1538 @@
+You are generating a single git commit message.
+Return only the commit message text. Do not include a preamble, quotes, or code fences.
+
+Rules:
+- First line: imperative mood, <= 72 chars, no trailing period.
+- Optional body: blank line, then short wrapped bullet points or prose explaining WHY.
+- Capture the primary user-visible or developer-visible change.
+- Use only the staged changes below as context.
+- Do not include "Co-authored-by" or other git trailers.
+
+Branch: master
+
+Staged files:
+M	README.md
+A	prisma/migrations/20260913160000_add_timer/migration.sql
+M	prisma/schema.prisma
+A	src/app/api/control/[token]/timer/route.ts
+M	src/app/api/overlay/[token]/events/route.ts
+M	src/app/control/[token]/Dock.tsx
+M	src/app/dashboard/SidePanel.tsx
+A	src/app/dashboard/w/timer/TimerEditor.tsx
+A	src/app/dashboard/w/timer/actions.ts
+A	src/app/dashboard/w/timer/page.tsx
+M	src/app/globals.css
+M	src/app/overlay/[token]/OverlayClient.tsx
+A	src/lib/controlTimer.ts
+M	src/lib/eventTypes.ts
+A	src/lib/timer.ts
+A	src/lib/timerConfig.ts
+A	tests/controlTimer.test.ts
+M	tests/eventTypes.test.ts
+A	tests/timerConfig.test.ts
+
+Staged patch:
+```diff
+diff --git a/README.md b/README.md
+index 70277f4..43fea14 100644
+--- a/README.md
++++ b/README.md
+@@ -97,6 +97,23 @@ with a live preview. It is server-held state, not an alert: a source that opens
+ pushed to every overlay of the account. The score moves from the OBS control
+ dock, or automatically when a result is fired from it.
+ 
++## The timer widget
++
++**Timer** in the sidebar has its own Browser Source URL
++(`/overlay/<token>?w=timer`) showing a countdown that stays on screen — a
++break, a "starting soon" clock, a giveaway window. It is customisable from
++that page: the label above the clock (text, or hidden), the clock format
++(`auto`, `mm:ss`, `hh:mm:ss`), what to show at 00:00 (text, or hide the widget),
++a warning colour that takes over under a chosen number of seconds left, plus
++colours, background, font, size and screen position, with a live preview.
++
++Like the scoreboard it is server-held state: the clock is started, paused,
++resumed, nudged by ±1/±5 minutes and cleared from the widget page or the OBS
++control dock, and every overlay of the account is told at once. Each frame
++carries the time remaining as of the moment it was sent and the overlay counts
++down locally from there, so a streaming PC whose clock disagrees with the
++server's still shows the right time. A single countdown is capped at 24 hours.
++
+ ## Firing an alert
+ 
+ `POST` a JSON body describing the event to either of these, using the
+diff --git a/prisma/migrations/20260913160000_add_timer/migration.sql b/prisma/migrations/20260913160000_add_timer/migration.sql
+new file mode 100644
+index 0000000..f08243f
+--- /dev/null
++++ b/prisma/migrations/20260913160000_add_timer/migration.sql
+@@ -0,0 +1,5 @@
++-- A stopped timer: no end instant and nothing left on the clock. Existing rows
++-- read exactly like a user who has never started one, so no backfill.
++ALTER TABLE "User" ADD COLUMN "timerEndsAt" TIMESTAMP(3);
++ALTER TABLE "User" ADD COLUMN "timerRemainingMs" INTEGER NOT NULL DEFAULT 0;
++ALTER TABLE "User" ADD COLUMN "timerConfig" JSONB;
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 9d2d81b..275e9d2 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -14,21 +14,28 @@ datasource db {
+ }
+ 
+ model User {
+-  id           String        @id @default(cuid())
+-  email        String        @unique
+-  passwordHash String
+-  createdAt    DateTime      @default(now())
++  id               String        @id @default(cuid())
++  email            String        @unique
++  passwordHash     String
++  createdAt        DateTime      @default(now())
+   // The scoreboard widget's running tally. One per user, like the hub room
+   // alerts fan out to, so every overlay of a user shows the same score.
+-  wins         Int           @default(0)
+-  losses       Int           @default(0)
++  wins             Int           @default(0)
++  losses           Int           @default(0)
+   // The scoreboard's appearance (labels, colours, position). Json, because it
+   // is read and written whole by src/lib/scoreConfig.ts and never queried.
+-  scoreConfig  Json?
+-  overlays     Overlay[]
+-  ingestKeys   IngestKey[]
+-  alertConfigs AlertConfig[]
+-  alertLogs    AlertLog[]
++  scoreConfig      Json?
++  // The timer widget. `timerEndsAt` non-null means a countdown is running and
++  // ends at that instant; null means stopped or paused, with whatever is left
++  // parked in `timerRemainingMs`. Appearance lives in `timerConfig`, read and
++  // written whole by src/lib/timerConfig.ts.
++  timerEndsAt      DateTime?
++  timerRemainingMs Int           @default(0)
++  timerConfig      Json?
++  overlays         Overlay[]
++  ingestKeys       IngestKey[]
++  alertConfigs     AlertConfig[]
++  alertLogs        AlertLog[]
+ }
+ 
+ model Overlay {
+diff --git a/src/app/api/control/[token]/timer/route.ts b/src/app/api/control/[token]/timer/route.ts
+new file mode 100644
+index 0000000..ce8c15e
+--- /dev/null
++++ b/src/app/api/control/[token]/timer/route.ts
+@@ -0,0 +1,11 @@
++import { handleControlTimer } from '@/lib/controlTimer';
++
++export async function GET(req: Request, ctx: { params: Promise<{ token: string }> }) {
++  const { token } = await ctx.params;
++  return handleControlTimer(req, token);
++}
++
++export async function POST(req: Request, ctx: { params: Promise<{ token: string }> }) {
++  const { token } = await ctx.params;
++  return handleControlTimer(req, token);
++}
+diff --git a/src/app/api/overlay/[token]/events/route.ts b/src/app/api/overlay/[token]/events/route.ts
+index 57f7860..5d90596 100644
+--- a/src/app/api/overlay/[token]/events/route.ts
++++ b/src/app/api/overlay/[token]/events/route.ts
+@@ -1,6 +1,7 @@
+ import prisma from '@/lib/db';
+ import { subscribe } from '@/lib/hub';
+ import { getScore } from '@/lib/score';
++import { getTimer } from '@/lib/timer';
+ 
+ export const dynamic = 'force-dynamic'; // never cache or prerender a live stream
+ 
+@@ -9,10 +10,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string
+   const overlay = await prisma.overlay.findUnique({ where: { token } });
+   if (!overlay) return Response.json({ error: 'unknown overlay' }, { status: 404 });
+ 
+-  // The scoreboard is continuous state, not an event: a Browser Source that
+-  // connects (or reconnects mid-stream) has to be told the current tally, or
+-  // it shows nothing until the next click.
+-  const score = await getScore(overlay.userId);
++  // The scoreboard and the timer are continuous state, not events: a Browser
++  // Source that connects (or reconnects mid-stream) has to be told the current
++  // tally and the current clock, or it shows nothing until the next click.
++  const [score, timer] = await Promise.all([getScore(overlay.userId), getTimer(overlay.userId)]);
+ 
+   const encoder = new TextEncoder();
+   let unsubscribe = () => {};
+@@ -23,7 +24,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string
+       const push = (frame: string) => controller.enqueue(encoder.encode(frame));
+       // One chunk, so the first frame a client reads is still the comment and
+       // the score rides along with it rather than shifting every later frame.
+-      push(`: connected\n\ndata: ${JSON.stringify({ widget: 'score', ...score })}\n\n`);
++      push(
++        `: connected\n\n` +
++          `data: ${JSON.stringify({ widget: 'score', ...score })}\n\n` +
++          `data: ${JSON.stringify({ widget: 'timer', ...timer })}\n\n`
++      );
+       unsubscribe = subscribe(overlay.userId, push);
+       // Keeps intermediary proxies from idling the connection out.
+       ping = setInterval(() => {
+diff --git a/src/app/control/[token]/Dock.tsx b/src/app/control/[token]/Dock.tsx
+index da46209..324fb19 100644
+--- a/src/app/control/[token]/Dock.tsx
++++ b/src/app/control/[token]/Dock.tsx
+@@ -1,11 +1,16 @@
+ 'use client';
+ 
+ import { useEffect, useState, useSyncExternalStore } from 'react';
++import { formatClock } from '@/lib/timerConfig';
+ import { describeResult } from '../../dashboard/describeResult';
+ import { resolveOpponent } from './resolveOpponent';
+ 
+ const OPPONENT_KEY = 'obsalert.dock.opponent';
+ 
++const MIN = 60_000;
++/** The lengths a break actually takes. Anything else is the dashboard's job. */
++const PRESETS_MIN = [5, 10, 15];
++
+ // useSyncExternalStore (not an effect) supplies only the *initial* snapshot:
+ // SSR-safe, so the server snapshot (empty) and the first client render agree
+ // without a second render pass — same idea as dashboard/SidePanel.tsx's
+@@ -43,6 +48,9 @@ export default function Dock({ token }: { token: string }) {
+   const [status, setStatus] = useState('');
+   const [firing, setFiring] = useState('');
+   const [score, setScore] = useState<{ wins: number; losses: number } | null>(null);
++  const [timer, setTimer] = useState<{ running: boolean; remainingMs: number; at: number } | null>(null);
++  // What the clock reads now: advanced by the interval below, never in render.
++  const [left, setLeft] = useState(0);
+ 
+   // The dock is the thing people click, so it shows the same tally the
+   // scoreboard widget shows. Server-owned: every response carries the new
+@@ -60,6 +68,31 @@ export default function Dock({ token }: { token: string }) {
+     };
+   }, [token]);
+ 
++  // Same server-owned rule as the score: every timer response carries the whole
++  // state, and the dock ticks locally from when it arrived rather than trusting
++  // this machine's clock to match the server's.
++  useEffect(() => {
++    let live = true;
++    fetch(`/api/control/${token}/timer`)
++      .then((r) => (r.ok ? r.json() : null))
++      .then((t) => {
++        if (!live || !t) return;
++        setTimer({ running: t.running, remainingMs: t.remainingMs, at: Date.now() });
++        setLeft(t.remainingMs);
++      })
++      .catch(() => {});
++    return () => {
++      live = false;
++    };
++  }, [token]);
++
++  useEffect(() => {
++    if (!timer?.running) return;
++    const { remainingMs, at } = timer;
++    const id = setInterval(() => setLeft(Math.max(0, remainingMs - (Date.now() - at))), 250);
++    return () => clearInterval(id);
++  }, [timer]);
++
+   function onOpponent(v: string) {
+     setDraft(v); // what the user sees — never depends on storage succeeding
+     writeOpponent(v); // best effort; a throw is already swallowed inside
+@@ -107,6 +140,31 @@ export default function Dock({ token }: { token: string }) {
+     }
+   }
+ 
++  /** Same shape as nudge(): the server returns the new clock, the dock never
++   *  computes one locally. */
++  async function timerAction(action: 'start' | 'pause' | 'resume' | 'add' | 'reset', ms = 0) {
++    setFiring(`timer:${action}${ms}`);
++    setStatus('');
++    try {
++      const res = await fetch(`/api/control/${token}/timer`, {
++        method: 'POST',
++        headers: { 'content-type': 'application/json' },
++        body: JSON.stringify(action === 'start' || action === 'add' ? { type: action, ms } : { type: action }),
++      });
++      const body = await res.json();
++      if (res.ok) {
++        setTimer({ running: body.running, remainingMs: body.remainingMs, at: Date.now() });
++        setLeft(body.remainingMs);
++      } else {
++        setStatus(describeResult({ status: res.status, body }));
++      }
++    } catch {
++      setStatus('could not reach the server — is it running?');
++    } finally {
++      setFiring('');
++    }
++  }
++
+   const counter = (label: string, type: 'win' | 'lose', value: number, cls: string) => (
+     <div className={`dock-count ${cls}`}>
+       <span className="dock-count-label">{label}</span>
+@@ -168,6 +226,61 @@ export default function Dock({ token }: { token: string }) {
+         </div>
+       ) : null}
+ 
++      {timer ? (
++        <div className="dock-timer">
++          <span className="dock-count-value">{formatClock(left)}</span>
++          <div className="dock-buttons">
++            {PRESETS_MIN.map((m) => (
++              <button
++                key={m}
++                type="button"
++                className="dock-step"
++                onClick={() => timerAction('start', m * MIN)}
++                disabled={firing !== ''}
++              >
++                {m}m
++              </button>
++            ))}
++          </div>
++          <div className="dock-buttons">
++            <button
++              type="button"
++              className="dock-step"
++              onClick={() => timerAction('add', -MIN)}
++              disabled={firing !== '' || left === 0}
++              aria-label="One minute less"
++            >
++              −1m
++            </button>
++            <button
++              type="button"
++              className="dock-step"
++              onClick={() => timerAction(timer.running ? 'pause' : 'resume')}
++              disabled={firing !== '' || left === 0}
++            >
++              {timer.running ? 'Pause' : 'Resume'}
++            </button>
++            <button
++              type="button"
++              className="dock-step"
++              onClick={() => timerAction('add', MIN)}
++              disabled={firing !== ''}
++              aria-label="One minute more"
++            >
++              +1m
++            </button>
++          </div>
++          <button
++            type="button"
++            className="dock-reset"
++            onClick={() => timerAction('reset')}
++            disabled={firing !== '' || (!timer.running && left === 0)}
++          >
++            Clear timer
++          </button>
++        </div>
++      ) : null}
++
+       <label className="dock-field">
+         <span>Opponent (optional)</span>
+         <input value={opponent} onChange={(e) => onOpponent(e.target.value)} placeholder="Team Red" />
+diff --git a/src/app/dashboard/SidePanel.tsx b/src/app/dashboard/SidePanel.tsx
+index 7a04532..8b09ceb 100644
+--- a/src/app/dashboard/SidePanel.tsx
++++ b/src/app/dashboard/SidePanel.tsx
+@@ -9,7 +9,7 @@ import { signOutAction } from './actions';
+ /** The signed-in chrome. Rendered by the dashboard layout, and by /docs (which
+  *  sits outside that layout) whenever there is a session. Replaces Nav.tsx. */
+ 
+-const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#' };
++const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#', timer: '⏱' };
+ 
+ const LINKS = [
+   { href: '/dashboard/settings', label: 'Settings', icon: '⚙' },
+diff --git a/src/app/dashboard/w/timer/TimerEditor.tsx b/src/app/dashboard/w/timer/TimerEditor.tsx
+new file mode 100644
+index 0000000..898fd41
+--- /dev/null
++++ b/src/app/dashboard/w/timer/TimerEditor.tsx
+@@ -0,0 +1,299 @@
++'use client';
++
++import { useEffect, useRef, useState } from 'react';
++import {
++  TIMER_FORMATS,
++  TIMER_POSITIONS,
++  formatClock,
++  type TimerConfig,
++  type TimerFormat,
++  type TimerPosition,
++} from '@/lib/timerConfig';
++import { applyTimerAction, saveTimerConfigAction } from './actions';
++import { ColorField, Field, Slider, Toggle } from '../../controls';
++import CopyButton from '../../CopyButton';
++
++const MIN = 60_000;
++/** The nudges the buttons offer, in minutes. Anything else is a new Start. */
++const NUDGES = [-5, -1, 1, 5];
++
++export default function TimerEditor({
++  initial,
++  overlayToken,
++  overlayUrl,
++}: {
++  initial: { running: boolean; remainingMs: number; config: TimerConfig };
++  overlayToken: string | null;
++  overlayUrl: string | null;
++}) {
++  const [draft, setDraft] = useState<TimerConfig>(initial.config);
++  // Same shape the overlay keeps: what the server said, and when it said it.
++  // The clock below ticks from `at`, so this page never needs the server's
++  // wall clock to agree with the browser's.
++  const [state, setState] = useState({
++    running: initial.running,
++    remainingMs: initial.remainingMs,
++    // Stamped on mount, not during render: reading the clock while rendering
++    // is neither pure nor SSR-safe.
++    at: 0,
++  });
++  const [minutes, setMinutes] = useState(5);
++  const [status, setStatus] = useState('');
++  const [busy, setBusy] = useState(false);
++  // What the clock reads right now. Advanced by the interval below (never
++  // during render) and set outright by the buttons, which already know the
++  // answer the server just gave them.
++  const [left, setLeft] = useState(initial.remainingMs);
++  const [iframeReady, setIframeReady] = useState(0);
++  const iframeRef = useRef<HTMLIFrameElement>(null);
++
++  function patch(p: Partial<TimerConfig>) {
++    setDraft((d) => ({ ...d, ...p }));
++  }
++
++  // Only tick while something is actually moving. `origin` is the instant the
++  // server's `remainingMs` was true: the button click that produced it, or —
++  // for the state this page was rendered with — the moment this effect runs.
++  useEffect(() => {
++    if (!state.running) return;
++    const origin = state.at > 0 ? state.at : Date.now();
++    const id = setInterval(
++      () => setLeft(Math.max(0, state.remainingMs - (Date.now() - origin))),
++      250
++    );
++    return () => clearInterval(id);
++  }, [state]);
++
++  // Debounced 200ms, same as the other editors. The preview paints the live
++  // clock with the *unsaved* config, so what is on screen is what Save would
++  // put on stream. The iframe keeps ticking on its own between posts.
++  useEffect(() => {
++    const timer = setTimeout(() => {
++      const win = iframeRef.current?.contentWindow;
++      if (!win) return;
++      win.postMessage(
++        {
++          kind: 'preview-alert',
++          alert: {
++            widget: 'timer',
++            running: state.running,
++            remainingMs:
++              state.running && state.at > 0
++                ? Math.max(0, state.remainingMs - (Date.now() - state.at))
++                : state.remainingMs,
++            config: draft,
++          },
++        },
++        window.location.origin
++      );
++    }, 200);
++    return () => clearTimeout(timer);
++  }, [draft, state, iframeReady]);
++
++  async function onSave() {
++    setBusy(true);
++    setStatus('saving…');
++    const r = await saveTimerConfigAction(draft);
++    setStatus(r.ok ? 'saved' : `not saved — ${r.error}`);
++    setBusy(false);
++  }
++
++  async function run(action: 'start' | 'pause' | 'resume' | 'add' | 'reset', ms = 0) {
++    setBusy(true);
++    const r = await applyTimerAction(action, ms);
++    if (r.ok) {
++      setState({ ...r.timer, at: Date.now() });
++      setLeft(r.timer.remainingMs);
++      setStatus('');
++    } else {
++      setStatus(`${r.status} — ${r.error}`);
++    }
++    setBusy(false);
++  }
++
++  return (
++    <div className="editor">
++      <header className="page-head">
++        <div>
++          <h1>Timer</h1>
++          <p className="muted">
++            A countdown that stays on screen — a break, a &ldquo;starting soon&rdquo; clock, a
++            giveaway window. Start it here or from the OBS control dock; the clock is held on the
++            server, so every overlay and dock shows the same time left.
++          </p>
++        </div>
++      </header>
++
++      {overlayUrl ? (
++        <div className="widget-url">
++          <CopyButton className="url-copy" value={overlayUrl} label="Click To Copy Widget URL" />
++          <a className="btn-primary btn-launch" href={overlayUrl} target="_blank" rel="noreferrer">
++            Launch
++          </a>
++        </div>
++      ) : null}
++
++      <div className="editor-grid">
++        <aside className="side">
++          <h2>Clock</h2>
++          <div className="dock-score">
++            <div className="dock-count">
++              <span className="dock-count-label">{state.running ? 'Running' : left > 0 ? 'Paused' : 'Stopped'}</span>
++              <span className="dock-count-value">{formatClock(left, draft.format)}</span>
++            </div>
++
++            <Field label="Start at">
++              <span className="field-control">
++                <input
++                  type="number"
++                  min={1}
++                  max={1440}
++                  value={minutes}
++                  onChange={(e) => setMinutes(Math.max(1, Math.min(1440, Number(e.target.value) || 1)))}
++                />
++              </span>
++            </Field>
++
++            <div className="dock-buttons">
++              <button type="button" className="btn-primary" onClick={() => run('start', minutes * MIN)} disabled={busy}>
++                Start {minutes}m
++              </button>
++              {state.running ? (
++                <button type="button" onClick={() => run('pause')} disabled={busy}>
++                  Pause
++                </button>
++              ) : (
++                <button type="button" onClick={() => run('resume')} disabled={busy || left === 0}>
++                  Resume
++                </button>
++              )}
++            </div>
++
++            <div className="dock-buttons">
++              {NUDGES.map((m) => (
++                <button key={m} type="button" className="dock-step" onClick={() => run('add', m * MIN)} disabled={busy}>
++                  {m > 0 ? `+${m}m` : `${m}m`}
++                </button>
++              ))}
++            </div>
++
++            <button
++              type="button"
++              className="dock-reset"
++              onClick={() => run('reset')}
++              disabled={busy || (!state.running && left === 0)}
++            >
++              Reset
++            </button>
++          </div>
++        </aside>
++
++        <div className="col-main">
++          <section className="card">
++            <div className="card-head">
++              <h2>Appearance</h2>
++            </div>
++            <div className="card-body">
++              <Toggle label="Show label" checked={draft.showLabel} onChange={(v) => patch({ showLabel: v })} />
++              <Field label="Label">
++                <input
++                  value={draft.label}
++                  maxLength={24}
++                  disabled={!draft.showLabel}
++                  onChange={(e) => patch({ label: e.target.value })}
++                />
++              </Field>
++              <Field label="Format">
++                <select value={draft.format} onChange={(e) => patch({ format: e.target.value as TimerFormat })}>
++                  {TIMER_FORMATS.map((f) => (
++                    <option key={f} value={f}>
++                      {f === 'auto' ? 'auto (hours only when needed)' : f}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++              <Toggle
++                label="Hide the widget at 00:00"
++                checked={draft.hideAtZero}
++                onChange={(v) => patch({ hideAtZero: v })}
++              />
++              <Field label="Text at 00:00">
++                <input
++                  value={draft.endText}
++                  maxLength={24}
++                  disabled={draft.hideAtZero}
++                  placeholder="00:00"
++                  onChange={(e) => patch({ endText: e.target.value })}
++                />
++              </Field>
++              <Slider
++                label="Warn under"
++                min={0}
++                max={600}
++                step={5}
++                value={draft.warnAtSec}
++                onChange={(v) => patch({ warnAtSec: v })}
++                format={(v) => (v === 0 ? 'off' : `${v}s`)}
++              />
++              <Field label="Position">
++                <select value={draft.pos} onChange={(e) => patch({ pos: e.target.value as TimerPosition })}>
++                  {TIMER_POSITIONS.map((p) => (
++                    <option key={p} value={p}>
++                      {p}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++              <ColorField label="Digits colour" value={draft.color} onChange={(v) => patch({ color: v })} />
++              <ColorField label="Warning colour" value={draft.warnColor} onChange={(v) => patch({ warnColor: v })} />
++              <ColorField label="Label colour" value={draft.labelColor} onChange={(v) => patch({ labelColor: v })} />
++              <ColorField label="Background" value={draft.bg} onChange={(v) => patch({ bg: v })} />
++              <Field label="Font">
++                <input value={draft.font} onChange={(e) => patch({ font: e.target.value })} />
++              </Field>
++              <Slider
++                label="Size"
++                min={16}
++                max={200}
++                value={draft.size}
++                onChange={(v) => patch({ size: v })}
++                format={(v) => `${v}px`}
++              />
++            </div>
++          </section>
++        </div>
++
++        <div className="col-preview">
++          <section className="card">
++            <div className="card-head">
++              <h2>Preview</h2>
++            </div>
++            {overlayToken ? (
++              <div className="preview-stage">
++                <iframe
++                  ref={iframeRef}
++                  src={`/overlay/${overlayToken}?w=timer`}
++                  onLoad={() => setIframeReady((n) => n + 1)}
++                  title="Overlay preview"
++                />
++              </div>
++            ) : (
++              <div className="card-body">
++                <p className="muted note">
++                  No overlay URL yet — set one up on the Settings page, then come back here to preview.
++                </p>
++              </div>
++            )}
++          </section>
++        </div>
++      </div>
++
++      <div className="savebar">
++        <span className="status">{status}</span>
++        <button type="button" className="btn-primary" onClick={onSave} disabled={busy}>
++          Save Settings
++        </button>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/dashboard/w/timer/actions.ts b/src/app/dashboard/w/timer/actions.ts
+new file mode 100644
+index 0000000..6370a4f
+--- /dev/null
++++ b/src/app/dashboard/w/timer/actions.ts
+@@ -0,0 +1,52 @@
++'use server';
++
++import { revalidatePath } from 'next/cache';
++import { requireUserId } from '@/auth';
++import { saveTimerConfigFor } from '@/lib/timerConfig';
++import {
++  applyTimer,
++  publishTimer,
++  MAX_ADJUST_MS,
++  MAX_DURATION_MS,
++  TIMER_ACTIONS,
++  type TimerAction,
++} from '@/lib/timer';
++
++// Form entrances: session-authenticated wrappers over src/lib/timerConfig.ts
++// and src/lib/timer.ts. Both validate their arguments at runtime — they arrive
++// over the wire and TypeScript guarantees nothing about them — and return a
++// 400-shaped result rather than throwing.
++
++export async function saveTimerConfigAction(config: unknown) {
++  const userId = await requireUserId();
++  const result = await saveTimerConfigFor(userId, config);
++  if (!result.ok) return result;
++  // The overlay is told immediately, so a saved appearance lands on stream
++  // without touching the Browser Source.
++  await publishTimer(userId);
++  revalidatePath('/dashboard/w/timer');
++  return result;
++}
++
++export async function applyTimerAction(action: unknown, ms: unknown) {
++  const userId = await requireUserId();
++  const a = TIMER_ACTIONS.find((x) => x === action) as TimerAction | undefined;
++  if (!a) return { ok: false as const, status: 400 as const, error: 'unknown timer action' };
++
++  let amount = 0;
++  if (a === 'start' || a === 'add') {
++    if (typeof ms !== 'number' || !Number.isInteger(ms)) {
++      return { ok: false as const, status: 400 as const, error: 'ms must be a whole number' };
++    }
++    const min = a === 'start' ? 0 : -MAX_ADJUST_MS;
++    const max = a === 'start' ? MAX_DURATION_MS : MAX_ADJUST_MS;
++    if (ms < min || ms > max) {
++      return { ok: false as const, status: 400 as const, error: `ms must be between ${min} and ${max}` };
++    }
++    amount = ms;
++  }
++
++  const timer = await applyTimer(userId, a, amount);
++  revalidatePath('/dashboard/w/timer');
++  return { ok: true as const, timer: { running: timer.running, remainingMs: timer.remainingMs } };
++}
+diff --git a/src/app/dashboard/w/timer/page.tsx b/src/app/dashboard/w/timer/page.tsx
+new file mode 100644
+index 0000000..8fb7c85
+--- /dev/null
++++ b/src/app/dashboard/w/timer/page.tsx
+@@ -0,0 +1,20 @@
++import { requireUserId } from '@/auth';
++import prisma from '@/lib/db';
++import { getTimer } from '@/lib/timer';
++import TimerEditor from './TimerEditor';
++
++export default async function TimerWidget() {
++  const userId = await requireUserId();
++  const [overlay, state] = await Promise.all([
++    prisma.overlay.findFirst({ where: { userId } }),
++    getTimer(userId),
++  ]);
++  const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
++  return (
++    <TimerEditor
++      initial={state}
++      overlayToken={overlay?.token ?? null}
++      overlayUrl={overlay ? `${base}/overlay/${overlay.token}?w=timer` : null}
++    />
++  );
++}
+diff --git a/src/app/globals.css b/src/app/globals.css
+index a66fd51..e27ef1a 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -952,6 +952,28 @@ input[type='color'].swatch::-moz-color-swatch {
+ .dock-reset:disabled {
+   opacity: 0.4;
+ }
++/* The timer block reuses the score block's chrome; only the step buttons
++   differ, since "Pause" and "+1m" do not fit a 38px square. */
++.dock-timer {
++  display: grid;
++  gap: 8px;
++  padding: 10px;
++  border: 1px solid var(--line);
++  border-radius: 12px;
++  justify-items: stretch;
++}
++.dock-timer .dock-count-value {
++  font-size: 30px;
++}
++.dock-timer .dock-buttons {
++  grid-template-columns: repeat(3, 1fr);
++}
++.dock-timer .dock-step {
++  width: auto;
++  padding: 0 8px;
++  font-size: 15px;
++}
++
+ .dock-field {
+   display: grid;
+   gap: 6px;
+diff --git a/src/app/overlay/[token]/OverlayClient.tsx b/src/app/overlay/[token]/OverlayClient.tsx
+index 8b6606c..72daa64 100644
+--- a/src/app/overlay/[token]/OverlayClient.tsx
++++ b/src/app/overlay/[token]/OverlayClient.tsx
+@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
+ import { createPreviewSlot, createQueue } from '@/lib/queue';
+ import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
+ import { parseScoreConfig, type ScoreConfig } from '@/lib/scoreConfig';
++import { formatClock, parseTimerConfig, type TimerConfig } from '@/lib/timerConfig';
+ import type { AlertPayload } from '@/lib/render';
+ 
+ const POS: Record<string, string> = {
+@@ -107,6 +108,60 @@ export default function OverlayClient({
+       board.el.dataset.labels = c.showLabels ? 'on' : 'off';
+     };
+ 
++    /** The timer: like the scoreboard, one element updated in place and never
++     *  removed — but it also has to keep moving between frames, so the server
++     *  sends `remainingMs` as of the moment it published and this ticks down
++     *  locally from when the frame arrived. Nothing here reads the server's
++     *  wall clock, so a streaming PC whose clock is minutes off still counts
++     *  down correctly. */
++    let clock: { el: HTMLDivElement; label: HTMLElement; time: HTMLElement } | null = null;
++    let ticking: ReturnType<typeof setInterval> | undefined;
++    let timerState: { running: boolean; remainingMs: number; at: number; config: TimerConfig } | null = null;
++
++    const paintTimer = () => {
++      if (!timerState || !clock) return;
++      const { running, remainingMs, at, config: c } = timerState;
++      const left = running ? Math.max(0, remainingMs - (Date.now() - at)) : remainingMs;
++      const done = left <= 0;
++      clock.el.dataset.hidden = done && c.hideAtZero ? 'on' : 'off';
++      clock.time.textContent = done && c.endText ? c.endText : formatClock(left, c.format);
++      clock.label.textContent = c.label;
++      clock.el.dataset.labels = c.showLabel && c.label ? 'on' : 'off';
++      // The warning colour is for the run-in to zero, not for a finished clock.
++      clock.el.dataset.warn = !done && c.warnAtSec > 0 && left <= c.warnAtSec * 1000 ? 'on' : 'off';
++    };
++
++    const showTimer = (running: boolean, remainingMs: number, raw: unknown) => {
++      // The config arrives over the wire; parseTimerConfig falls back to the
++      // defaults per field rather than letting a bad value reach cssText.
++      const c: TimerConfig = parseTimerConfig(raw);
++      if (!clock) {
++        const el = document.createElement('div');
++        el.className = 'timer';
++        const label = document.createElement('div');
++        label.className = 'timer-label';
++        const time = document.createElement('div');
++        time.className = 'timer-time';
++        el.append(label, time);
++        root.append(el);
++        clock = { el, label, time };
++        // A quarter of a second: the seconds digit never looks stuck, and the
++        // cost is four textContent writes a second in a Browser Source.
++        ticking = setInterval(paintTimer, 250);
++      }
++      clock.el.style.cssText = [
++        POS[c.pos] ?? POS.top,
++        `--fg:${c.color}`,
++        `--warn:${c.warnColor}`,
++        `--label:${c.labelColor}`,
++        `--bg:${c.bg}`,
++        `--font:${c.font}`,
++        `--size:${c.size}px`,
++      ].join(';');
++      timerState = { running, remainingMs: Math.max(0, remainingMs), at: Date.now(), config: c };
++      paintTimer();
++    };
++
+     /** Appends card to root, triggers animation, and handles audio.
+      *  Returns the { card, audio } shape for scheduleHide to work on both
+      *  renderers identically. */
+@@ -334,6 +389,11 @@ export default function OverlayClient({
+           showScore(f.wins ?? 0, f.losses ?? 0, f.config);
+           return;
+         }
++        if (a.widget === 'timer') {
++          const f = a as unknown as { running?: boolean; remainingMs?: number; config?: unknown };
++          showTimer(f.running === true, f.remainingMs ?? 0, f.config);
++          return;
++        }
+         queue.push(a);
+       } catch {
+         /* ignore a malformed frame */
+@@ -354,6 +414,11 @@ export default function OverlayClient({
+         showScore(f.wins ?? 0, f.losses ?? 0, f.config);
+         return;
+       }
++      if (a.widget === 'timer') {
++        const f = a as unknown as { running?: boolean; remainingMs?: number; config?: unknown };
++        showTimer(f.running === true, f.remainingMs ?? 0, f.config);
++        return;
++      }
+       previewSlot.show(a);
+     };
+     window.addEventListener('message', onMessage);
+@@ -362,6 +427,7 @@ export default function OverlayClient({
+       es.close();
+       window.removeEventListener('message', onMessage);
+       previewSlot.clear();
++      clearInterval(ticking);
+     };
+   }, [token, widget]);
+ 
+@@ -392,6 +458,18 @@ export default function OverlayClient({
+         .score-w{color:var(--win)} .score-l{color:var(--loss)}
+         .score-sep{color:var(--label);opacity:.45}
+ 
++        .timer{position:fixed;display:grid;justify-items:center;gap:.1em;
++          padding:.18em .5em;border-radius:.22em;background:var(--bg);
++          font-family:var(--font);font-size:var(--size);font-weight:900;
++          line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
++          color:var(--fg)}
++        .timer[data-hidden="on"]{display:none}
++        .timer-label{font-size:.22em;font-weight:800;letter-spacing:.2em;
++          text-transform:uppercase;color:var(--label);opacity:.75;white-space:nowrap}
++        .timer[data-labels="off"] .timer-label{display:none}
++        .timer[data-warn="on"] .timer-time{color:var(--warn);animation:timer-pulse 1s ease-in-out infinite}
++        @keyframes timer-pulse{50%{opacity:.55}}
++
+         .result{position:fixed;inset:0;display:grid;place-items:center;
+           font-family:var(--font);color:var(--fg);opacity:0;transition:opacity .3s}
+         .result.in{opacity:1}
+diff --git a/src/lib/controlTimer.ts b/src/lib/controlTimer.ts
+new file mode 100644
+index 0000000..aedfd30
+--- /dev/null
++++ b/src/lib/controlTimer.ts
+@@ -0,0 +1,73 @@
++// The dock's timer endpoint: read the clock (GET) and move it (POST).
++// Deliberately as narrow as src/lib/controlScore.ts — its credential travels
++// in a URL pinned in an OBS dock, so a leaked dock can start, pause or nudge a
++// countdown and nothing else.
++import { authorizeControl } from './control';
++import {
++  applyTimer,
++  getTimer,
++  MAX_ADJUST_MS,
++  MAX_DURATION_MS,
++  TIMER_ACTIONS,
++  type TimerAction,
++} from './timer';
++
++const MAX_BODY = 64 * 1024;
++
++export async function handleControlTimer(req: Request, token: string): Promise<Response> {
++  let overlayId: string | undefined;
++
++  try {
++    const auth = await authorizeControl(token);
++    if (auth instanceof Response) return auth;
++    overlayId = auth.id;
++
++    if (req.method === 'GET') return Response.json(await getTimer(auth.userId));
++
++    const raw = await req.text();
++    if (Buffer.byteLength(raw) > MAX_BODY) {
++      return Response.json({ error: 'body too large' }, { status: 413 });
++    }
++
++    let parsed: unknown;
++    try {
++      parsed = JSON.parse(raw);
++    } catch {
++      return Response.json({ error: 'invalid JSON' }, { status: 400 });
++    }
++    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
++      return Response.json({ error: 'invalid JSON' }, { status: 400 });
++    }
++
++    // Allow-list, built field by field: nothing from the body reaches the
++    // database except an action drawn from TIMER_ACTIONS and a bounded integer.
++    const { type, ms } = parsed as Record<string, unknown>;
++    const action = TIMER_ACTIONS.find((a) => a === type) as TimerAction | undefined;
++    if (!action) {
++      return Response.json({ error: 'unknown timer action', known: TIMER_ACTIONS }, { status: 400 });
++    }
++
++    let amount = 0;
++    if (action === 'start' || action === 'add') {
++      if (typeof ms !== 'number' || !Number.isInteger(ms)) {
++        return Response.json({ error: 'ms must be a whole number of milliseconds' }, { status: 400 });
++      }
++      const min = action === 'start' ? 0 : -MAX_ADJUST_MS;
++      const max = action === 'start' ? MAX_DURATION_MS : MAX_ADJUST_MS;
++      if (ms < min || ms > max) {
++        return Response.json({ error: `ms must be between ${min} and ${max}` }, { status: 400 });
++      }
++      amount = ms;
++    }
++
++    const state = await applyTimer(auth.userId, action, amount);
++    console.log(`control ${auth.id} timer ${action} -> ${state.running ? 'running' : 'stopped'} ${state.remainingMs}ms`);
++    return Response.json(state);
++  } catch (err) {
++    // Never let an exception reach Next's default error handling: it may log
++    // the request URL, and the URL carries the control token.
++    const message = err instanceof Error ? err.message : String(err);
++    console.error(overlayId ? `control ${overlayId} timer error: ${message}` : `control timer error: ${message}`);
++    return Response.json({ error: 'internal error' }, { status: 500 });
++  }
++}
+diff --git a/src/lib/eventTypes.ts b/src/lib/eventTypes.ts
+index 675eb55..267f07a 100644
+--- a/src/lib/eventTypes.ts
++++ b/src/lib/eventTypes.ts
+@@ -1,7 +1,7 @@
+ export type FieldType = 'string' | 'number';
+ export type Field = { name: string; type: FieldType; required: boolean };
+ 
+-export type Widget = 'alerts' | 'result' | 'score';
++export type Widget = 'alerts' | 'result' | 'score' | 'timer';
+ 
+ /** Every widget, in sidebar order. One overlay token serves them all; a
+  *  `?w=<id>` on the overlay URL narrows a Browser Source to a single widget,
+@@ -11,6 +11,7 @@ export const WIDGETS: readonly { id: Widget; label: string; href: string }[] = [
+   { id: 'alerts', label: 'Alerts', href: '/dashboard/w/alerts' },
+   { id: 'result', label: 'Win / Loss', href: '/dashboard/w/win-loss' },
+   { id: 'score', label: 'Scoreboard', href: '/dashboard/w/score' },
++  { id: 'timer', label: 'Timer', href: '/dashboard/w/timer' },
+ ];
+ 
+ /** Narrows an untrusted `?w=` value to a Widget, or null for "all widgets". */
+diff --git a/src/lib/timer.ts b/src/lib/timer.ts
+new file mode 100644
+index 0000000..251473c
+--- /dev/null
++++ b/src/lib/timer.ts
+@@ -0,0 +1,101 @@
++// The timer widget's state. Like the scoreboard it is a value the overlay
++// shows continuously rather than an event that plays and disappears, so it
++// lives in columns and every change is fanned out on the same hub.
++//
++// Two columns, one invariant: `timerEndsAt` non-null means running and the
++// clock ends at that instant; null means stopped or paused, with what is left
++// parked in `timerRemainingMs`. The wire frame carries `remainingMs` as of the
++// moment it was published and the overlay ticks down locally from there, so
++// nothing depends on the streaming PC's clock agreeing with the server's.
++import prisma from './db';
++import { publish } from './hub';
++import { parseTimerConfig, type TimerConfig } from './timerConfig';
++
++export type TimerState = { running: boolean; remainingMs: number; config: TimerConfig };
++export type TimerAction = 'start' | 'pause' | 'resume' | 'add' | 'reset';
++export const TIMER_ACTIONS: readonly TimerAction[] = ['start', 'pause', 'resume', 'add', 'reset'];
++
++/** A single countdown may run for a day. Long enough for a subathon session,
++ *  short enough that a fat-fingered value cannot park a clock for a year. */
++export const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
++/** One nudge of the ± buttons, in either direction. */
++export const MAX_ADJUST_MS = 60 * 60 * 1000;
++
++type Row = { timerEndsAt: Date | null; timerRemainingMs: number; timerConfig: unknown };
++
++function stateOf(row: Row | null, now: number): TimerState {
++  const config = parseTimerConfig(row?.timerConfig);
++  if (!row?.timerEndsAt) {
++    return { running: false, remainingMs: Math.max(0, row?.timerRemainingMs ?? 0), config };
++  }
++  return { running: true, remainingMs: Math.max(0, row.timerEndsAt.getTime() - now), config };
++}
++
++export async function getTimer(userId: string, now = Date.now()): Promise<TimerState> {
++  const row = await prisma.user.findUnique({
++    where: { id: userId },
++    select: { timerEndsAt: true, timerRemainingMs: true, timerConfig: true },
++  });
++  return stateOf(row, now);
++}
++
++/** Fans the current state out untouched — used after an appearance change,
++ *  which every overlay has to be told about but which moves no clock. */
++export async function publishTimer(userId: string): Promise<TimerState> {
++  const state = await getTimer(userId);
++  publish(userId, { widget: 'timer', ...state });
++  return state;
++}
++
++/** Applies one bounded transition and fans the new state out to every overlay
++ *  of this user. `ms` is the start duration for 'start' and the signed nudge
++ *  for 'add'; the other actions ignore it. Nothing ever goes below zero, and
++ *  nothing is ever scheduled further out than MAX_DURATION_MS.
++ *
++ *  ponytail: read-then-write rather than one SQL statement, same as
++ *  adjustScore. Ceiling: two docks clicking inside one round trip can lose a
++ *  nudge. Upgrade path: a single UPDATE ... RETURNING. */
++export async function applyTimer(userId: string, action: TimerAction, ms = 0): Promise<TimerState> {
++  const now = Date.now();
++  const cur = await getTimer(userId, now);
++  const clamp = (v: number) => Math.min(MAX_DURATION_MS, Math.max(0, v));
++
++  // Rebuilt field by field, never spread from `cur`: `cur` carries the config
++  // too, and a spread would send it to Prisma as an unknown column.
++  let endsAt: Date | null = null;
++  let remainingMs = 0;
++
++  switch (action) {
++    case 'start':
++      remainingMs = clamp(ms);
++      endsAt = remainingMs > 0 ? new Date(now + remainingMs) : null;
++      break;
++    case 'pause':
++      remainingMs = cur.remainingMs;
++      break;
++    case 'resume':
++      remainingMs = cur.remainingMs;
++      // Resuming a finished clock is a no-op rather than an instant re-fire.
++      endsAt = remainingMs > 0 ? new Date(now + remainingMs) : null;
++      break;
++    case 'add': {
++      remainingMs = clamp(cur.remainingMs + ms);
++      // Adding time to a running clock keeps it running — including one that
++      // has just hit zero but was never paused, which is what "+5 min" on a
++      // dead break timer is asking for. Adding to a paused or cleared clock
++      // parks the new time without starting it.
++      endsAt = cur.running && remainingMs > 0 ? new Date(now + remainingMs) : null;
++      break;
++    }
++    case 'reset':
++      break;
++  }
++
++  await prisma.user.update({
++    where: { id: userId },
++    data: { timerEndsAt: endsAt, timerRemainingMs: endsAt ? 0 : remainingMs },
++  });
++  const state: TimerState = { running: endsAt !== null, remainingMs, config: cur.config };
++  publish(userId, { widget: 'timer', ...state });
++  return state;
++}
+diff --git a/src/lib/timerConfig.ts b/src/lib/timerConfig.ts
+new file mode 100644
+index 0000000..2e51f7e
+--- /dev/null
++++ b/src/lib/timerConfig.ts
+@@ -0,0 +1,162 @@
++// The timer widget's appearance, plus the one clock-formatting function the
++// overlay, the editor and the tests all share. Plain module (no 'use server'),
++// same shape as src/lib/scoreConfig.ts: functions take userId explicitly and
++// every value that reaches Prisma or the overlay is rebuilt field by field.
++import { CSS_UNSAFE } from './alertConfig';
++import prisma from './db';
++import { SCORE_POSITIONS, type ScorePosition } from './scoreConfig';
++
++// The timer hangs in the same seven places the scoreboard does; one list, so
++// the two widgets cannot drift apart.
++export const TIMER_POSITIONS = SCORE_POSITIONS;
++export type TimerPosition = ScorePosition;
++
++export const TIMER_FORMATS = ['auto', 'mm:ss', 'hh:mm:ss'] as const;
++export type TimerFormat = (typeof TIMER_FORMATS)[number];
++
++export type TimerConfig = {
++  showLabel: boolean;
++  label: string;
++  endText: string;
++  format: TimerFormat;
++  /** Seconds left at which `warnColor` takes over. 0 disables the warning. */
++  warnAtSec: number;
++  hideAtZero: boolean;
++  color: string;
++  warnColor: string;
++  labelColor: string;
++  bg: string;
++  font: string;
++  size: number;
++  pos: TimerPosition;
++};
++
++export const TIMER_DEFAULTS: TimerConfig = {
++  showLabel: true,
++  label: 'STARTING SOON',
++  endText: "LET'S GO",
++  format: 'auto',
++  warnAtSec: 60,
++  hideAtZero: true,
++  color: '#ffffff',
++  warnColor: '#ff5c8a',
++  labelColor: '#ffffff',
++  bg: 'rgba(12,12,16,0.72)',
++  font: 'system-ui, sans-serif',
++  size: 64,
++  pos: 'top',
++};
++
++// Text is written with textContent, never innerHTML, so markup in it is inert —
++// the caps are about layout, not safety.
++const LABEL_MAX = 24;
++const SIZE_MIN = 16;
++const SIZE_MAX = 200;
++const WARN_MAX = 3600;
++
++// Colours, `bg` and `font` are injected verbatim into the clock's cssText,
++// exactly like an alert card's style values, so they get the same refusal.
++const COLOR_KEYS = ['color', 'warnColor', 'labelColor', 'bg', 'font'] as const;
++const TEXT_KEYS = ['label', 'endText'] as const;
++const BOOL_KEYS = ['showLabel', 'hideAtZero'] as const;
++
++export type CleanResult = { ok: true; config: TimerConfig } | { ok: false; error: string };
++
++/** Rebuilds a full config from untrusted input: session-form input on the way
++ *  in, and a Json column that an older version may have written on the way
++ *  out. Unknown keys — `userId` included — are dropped, not spread. */
++export function cleanTimerConfig(raw: unknown): CleanResult {
++  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
++    return { ok: false, error: 'config must be an object' };
++  }
++  const input = raw as Record<string, unknown>;
++  const out: TimerConfig = { ...TIMER_DEFAULTS };
++
++  for (const k of BOOL_KEYS) {
++    const v = input[k];
++    if (v === undefined) continue;
++    if (typeof v !== 'boolean') return { ok: false, error: `${k} must be a boolean` };
++    out[k] = v;
++  }
++
++  for (const k of TEXT_KEYS) {
++    const v = input[k];
++    if (v === undefined) continue;
++    if (typeof v !== 'string') return { ok: false, error: `${k} must be a string` };
++    out[k] = v.slice(0, LABEL_MAX);
++  }
++
++  for (const k of COLOR_KEYS) {
++    const v = input[k];
++    if (v === undefined) continue;
++    if (typeof v !== 'string') return { ok: false, error: `${k} must be a string` };
++    if (CSS_UNSAFE.test(v)) {
++      return { ok: false, error: `${k} contains characters that are not allowed in a style value` };
++    }
++    out[k] = v;
++  }
++
++  if (input.size !== undefined) {
++    if (typeof input.size !== 'number' || !Number.isFinite(input.size)) {
++      return { ok: false, error: 'size must be a number' };
++    }
++    out.size = Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, input.size)));
++  }
++
++  if (input.warnAtSec !== undefined) {
++    if (typeof input.warnAtSec !== 'number' || !Number.isFinite(input.warnAtSec)) {
++      return { ok: false, error: 'warnAtSec must be a number' };
++    }
++    out.warnAtSec = Math.round(Math.min(WARN_MAX, Math.max(0, input.warnAtSec)));
++  }
++
++  if (input.format !== undefined) {
++    const f = TIMER_FORMATS.find((x) => x === input.format);
++    if (!f) return { ok: false, error: 'format is not a known clock format' };
++    out.format = f;
++  }
++
++  if (input.pos !== undefined) {
++    const pos = TIMER_POSITIONS.find((p) => p === input.pos);
++    if (!pos) return { ok: false, error: 'pos is not a known position' };
++    out.pos = pos;
++  }
++
++  return { ok: true, config: out };
++}
++
++/** Read path: a stored config that fails validation (hand-edited row, a field
++ *  this version no longer knows) falls back to the defaults rather than
++ *  breaking the overlay. */
++export function parseTimerConfig(raw: unknown): TimerConfig {
++  if (raw === null || raw === undefined) return { ...TIMER_DEFAULTS };
++  const cleaned = cleanTimerConfig(raw);
++  return cleaned.ok ? cleaned.config : { ...TIMER_DEFAULTS };
++}
++
++export type SaveTimerResult = { ok: true; config: TimerConfig } | { ok: false; status: 400; error: string };
++
++export async function saveTimerConfigFor(userId: string, raw: unknown): Promise<SaveTimerResult> {
++  const cleaned = cleanTimerConfig(raw);
++  if (!cleaned.ok) return { ok: false, status: 400, error: cleaned.error };
++  // `where` is the session's own id and `data` is the rebuilt object — nothing
++  // from the caller's body can select or write another tenant's row.
++  await prisma.user.update({ where: { id: userId }, data: { timerConfig: cleaned.config } });
++  return { ok: true, config: cleaned.config };
++}
++
++const pad = (n: number) => String(n).padStart(2, '0');
++
++/** Milliseconds to a clock face. `auto` drops the hours until there are any,
++ *  so a five-minute break reads `04:59` and a subathon reads `12:04:59`.
++ *  Rounds up: one whole second is on screen for every second remaining, and
++ *  `00:00` shows only when the timer has actually finished. */
++export function formatClock(ms: number, format: TimerFormat = 'auto'): string {
++  const total = Math.max(0, Math.ceil(ms / 1000));
++  const h = Math.floor(total / 3600);
++  const m = Math.floor((total % 3600) / 60);
++  const s = total % 60;
++  if (format === 'hh:mm:ss' || (format === 'auto' && h > 0)) return `${pad(h)}:${pad(m)}:${pad(s)}`;
++  // mm:ss past an hour keeps counting minutes rather than silently wrapping.
++  return `${pad(h * 60 + m)}:${pad(s)}`;
++}
+diff --git a/tests/controlTimer.test.ts b/tests/controlTimer.test.ts
+new file mode 100644
+index 0000000..c6d5700
+--- /dev/null
++++ b/tests/controlTimer.test.ts
+@@ -0,0 +1,139 @@
++import { beforeEach, expect, test, vi } from 'vitest';
++import { handleControlTimer } from '@/lib/controlTimer';
++import { getTimer, MAX_ADJUST_MS, MAX_DURATION_MS } from '@/lib/timer';
++import { TIMER_DEFAULTS } from '@/lib/timerConfig';
++import { __reset as resetHub, subscribe } from '@/lib/hub';
++import { __reset as resetRl } from '@/lib/ratelimit';
++import { makeUser, resetDb } from './helpers/db';
++
++const post = (payload: unknown) =>
++  new Request('http://localhost/api/control/x/timer', {
++    method: 'POST',
++    headers: { 'content-type': 'application/json' },
++    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
++  });
++
++const get = () => new Request('http://localhost/api/control/x/timer');
++
++beforeEach(async () => {
++  resetHub();
++  resetRl();
++  await resetDb();
++});
++
++test('GET reads a stopped clock and start runs it, fanning the new state out', async () => {
++  const { user, overlay } = await makeUser();
++  const frames: string[] = [];
++  subscribe(user.id, (f) => frames.push(f));
++
++  expect(await (await handleControlTimer(get(), overlay.controlToken)).json()).toEqual({
++    running: false,
++    remainingMs: 0,
++    config: TIMER_DEFAULTS,
++  });
++
++  const res = await handleControlTimer(post({ type: 'start', ms: 300_000 }), overlay.controlToken);
++  expect(res.status).toBe(200);
++  expect(await res.json()).toMatchObject({ running: true, remainingMs: 300_000 });
++  expect(JSON.parse(frames[0].slice(6))).toMatchObject({ widget: 'timer', running: true });
++
++  // Read back through the clock: the remaining time shrinks on its own.
++  const later = await getTimer(user.id, Date.now() + 60_000);
++  expect(later.running).toBe(true);
++  expect(later.remainingMs).toBeLessThanOrEqual(240_000);
++  expect(later.remainingMs).toBeGreaterThan(239_000);
++});
++
++test('pause parks what is left and resume puts it back on the clock', async () => {
++  const { user, overlay } = await makeUser();
++  vi.useFakeTimers();
++  try {
++    await handleControlTimer(post({ type: 'start', ms: 300_000 }), overlay.controlToken);
++    vi.advanceTimersByTime(120_000);
++    const paused = await (await handleControlTimer(post({ type: 'pause' }), overlay.controlToken)).json();
++    expect(paused).toMatchObject({ running: false, remainingMs: 180_000 });
++
++    // A paused clock does not move, however long it sits there.
++    vi.advanceTimersByTime(600_000);
++    expect(await getTimer(user.id)).toMatchObject({ running: false, remainingMs: 180_000 });
++
++    const resumed = await (await handleControlTimer(post({ type: 'resume' }), overlay.controlToken)).json();
++    expect(resumed).toMatchObject({ running: true, remainingMs: 180_000 });
++  } finally {
++    vi.useRealTimers();
++  }
++});
++
++test('add nudges either state, never below zero or past the cap', async () => {
++  const { user, overlay } = await makeUser();
++  vi.useFakeTimers();
++  try {
++    await handleControlTimer(post({ type: 'start', ms: 300_000 }), overlay.controlToken);
++    const up = await (await handleControlTimer(post({ type: 'add', ms: 60_000 }), overlay.controlToken)).json();
++    expect(up).toMatchObject({ running: true, remainingMs: 360_000 });
++
++    // Subtracting more than is left stops at zero rather than going negative.
++    const down = await (await handleControlTimer(post({ type: 'add', ms: -MAX_ADJUST_MS }), overlay.controlToken)).json();
++    expect(down).toMatchObject({ running: false, remainingMs: 0 });
++
++    // Adding to a cleared clock parks the time without starting it; Resume
++    // (or another Start) is the thing that sets it running again.
++    const again = await (await handleControlTimer(post({ type: 'add', ms: 60_000 }), overlay.controlToken)).json();
++    expect(again).toMatchObject({ running: false, remainingMs: 60_000 });
++    expect(await getTimer(user.id)).toMatchObject({ remainingMs: 60_000 });
++
++    // But a clock that ran out on its own is still 'running': +1m there puts
++    // it straight back on the air.
++    await handleControlTimer(post({ type: 'start', ms: 1000 }), overlay.controlToken);
++    vi.advanceTimersByTime(5000);
++    const revived = await (await handleControlTimer(post({ type: 'add', ms: 60_000 }), overlay.controlToken)).json();
++    expect(revived).toMatchObject({ running: true, remainingMs: 60_000 });
++  } finally {
++    vi.useRealTimers();
++  }
++});
++
++test('a finished countdown reads as zero rather than a negative clock', async () => {
++  const { user, overlay } = await makeUser();
++  await handleControlTimer(post({ type: 'start', ms: 1000 }), overlay.controlToken);
++  expect(await getTimer(user.id, Date.now() + 60_000)).toMatchObject({ running: true, remainingMs: 0 });
++});
++
++test('reset clears the clock', async () => {
++  const { user, overlay } = await makeUser();
++  await handleControlTimer(post({ type: 'start', ms: 300_000 }), overlay.controlToken);
++  await handleControlTimer(post({ type: 'reset' }), overlay.controlToken);
++  expect(await getTimer(user.id)).toMatchObject({ running: false, remainingMs: 0 });
++});
++
++test('bad input is a 400 and changes nothing', async () => {
++  const { user, overlay } = await makeUser();
++  for (const body of [
++    { type: 'nope', ms: 1000 },
++    { type: 'toString', ms: 1000 },
++    { type: 'start' },
++    { type: 'start', ms: '60000' },
++    { type: 'start', ms: 1.5 },
++    { type: 'start', ms: -1 },
++    { type: 'start', ms: MAX_DURATION_MS + 1 },
++    { type: 'add', ms: MAX_ADJUST_MS + 1 },
++    { type: 'add', ms: -MAX_ADJUST_MS - 1 },
++    'not json',
++    [1, 2],
++  ]) {
++    const res = await handleControlTimer(post(body), overlay.controlToken);
++    expect(res.status, JSON.stringify(body)).toBe(400);
++  }
++  expect(await getTimer(user.id)).toMatchObject({ running: false, remainingMs: 0 });
++});
++
++test('an unknown control token is a 401 and an oversized body is a 413', async () => {
++  const { overlay } = await makeUser();
++  expect((await handleControlTimer(post({ type: 'reset' }), 'nope')).status).toBe(401);
++  const big = new Request('http://localhost/api/control/x/timer', {
++    method: 'POST',
++    headers: { 'content-type': 'application/json' },
++    body: JSON.stringify({ type: 'start', ms: 1000, pad: 'x'.repeat(70_000) }),
++  });
++  expect((await handleControlTimer(big, overlay.controlToken)).status).toBe(413);
++});
+diff --git a/tests/eventTypes.test.ts b/tests/eventTypes.test.ts
+index 47f0c16..bb04773 100644
+--- a/tests/eventTypes.test.ts
++++ b/tests/eventTypes.test.ts
+@@ -55,9 +55,10 @@ test('parseWidget accepts only known widget ids, everything else is all-widgets'
+ 
+ test('every event-driven widget in WIDGETS is one some event type renders', () => {
+   const used = new Set(Object.values(BUILT_IN).map((t) => t.widget));
+-  // 'score' is the exception on purpose: it renders server-held state, not an
+-  // event, so no BUILT_IN entry points at it.
+-  const driven = WIDGETS.filter((w) => w.id !== 'score');
++  // 'score' and 'timer' are the exceptions on purpose: they render server-held
++  // state, not events, so no BUILT_IN entry points at either.
++  const stateful = new Set(['score', 'timer']);
++  const driven = WIDGETS.filter((w) => !stateful.has(w.id));
+   for (const w of driven) expect(used.has(w.id), w.id).toBe(true);
+   expect(driven.length).toBe(used.size);
+ });
+diff --git a/tests/timerConfig.test.ts b/tests/timerConfig.test.ts
+new file mode 100644
+index 0000000..1aac123
+--- /dev/null
++++ b/tests/timerConfig.test.ts
+@@ -0,0 +1,101 @@
++import { beforeEach, expect, test } from 'vitest';
++import { getTimer } from '@/lib/timer';
++import {
++  TIMER_DEFAULTS,
++  cleanTimerConfig,
++  formatClock,
++  parseTimerConfig,
++  saveTimerConfigFor,
++} from '@/lib/timerConfig';
++import { makeUser, resetDb } from './helpers/db';
++
++beforeEach(async () => {
++  await resetDb();
++});
++
++test('an empty patch is the defaults, and known fields are kept', () => {
++  expect(cleanTimerConfig({})).toEqual({ ok: true, config: TIMER_DEFAULTS });
++  const r = cleanTimerConfig({ showLabel: false, label: 'BRB', pos: 'bottom-right', format: 'hh:mm:ss' });
++  expect(r).toMatchObject({
++    ok: true,
++    config: { showLabel: false, label: 'BRB', pos: 'bottom-right', format: 'hh:mm:ss' },
++  });
++});
++
++test('unknown keys are dropped rather than spread', () => {
++  const r = cleanTimerConfig({ userId: 'someone-else', id: 'x', label: 'BRB' });
++  expect(r.ok).toBe(true);
++  if (r.ok) expect(Object.keys(r.config).sort()).toEqual(Object.keys(TIMER_DEFAULTS).sort());
++});
++
++test('a CSS-unsafe colour is a 400-shaped refusal', () => {
++  for (const bad of [
++    { color: 'red;background:url(https://evil/x)' },
++    { warnColor: 'url(https://evil/x)' },
++    { font: 'a}body{display:none' },
++  ]) {
++    expect(cleanTimerConfig(bad).ok, JSON.stringify(bad)).toBe(false);
++  }
++});
++
++test('wrong types, unknown formats and unknown positions are refused', () => {
++  for (const bad of [
++    { showLabel: 'yes' },
++    { hideAtZero: 1 },
++    { label: 3 },
++    { size: 'big' },
++    { warnAtSec: Number.NaN },
++    { format: 'ss' },
++    { pos: 'middle-left' },
++    'not an object',
++    [1, 2],
++    null,
++  ]) {
++    expect(cleanTimerConfig(bad).ok, JSON.stringify(bad)).toBe(false);
++  }
++});
++
++test('numbers are clamped and text is capped', () => {
++  const big = cleanTimerConfig({ size: 9000, warnAtSec: 99999, label: 'x'.repeat(100) });
++  expect(big.ok).toBe(true);
++  if (big.ok) {
++    expect(big.config.size).toBe(200);
++    expect(big.config.warnAtSec).toBe(3600);
++    expect(big.config.label).toHaveLength(24);
++  }
++  const small = cleanTimerConfig({ size: 1, warnAtSec: -5 });
++  if (small.ok) {
++    expect(small.config.size).toBe(16);
++    expect(small.config.warnAtSec).toBe(0);
++  }
++});
++
++test('a stored config that no longer validates reads as the defaults', () => {
++  expect(parseTimerConfig(null)).toEqual(TIMER_DEFAULTS);
++  expect(parseTimerConfig({ pos: 'nowhere' })).toEqual(TIMER_DEFAULTS);
++  expect(parseTimerConfig({ label: 'BRB' })).toMatchObject({ label: 'BRB' });
++});
++
++test('saving writes only the rebuilt config, and bad input never reaches the row', async () => {
++  const { user } = await makeUser();
++  const bad = await saveTimerConfigFor(user.id, { userId: 'someone-else', size: 'big' });
++  expect(bad).toMatchObject({ ok: false, status: 400 });
++  expect((await getTimer(user.id)).config).toEqual(TIMER_DEFAULTS);
++
++  const ok = await saveTimerConfigFor(user.id, { label: 'BRB', userId: 'someone-else' });
++  expect(ok.ok).toBe(true);
++  const stored = (await getTimer(user.id)).config;
++  expect(stored).toMatchObject({ label: 'BRB' });
++  expect(Object.keys(stored).sort()).toEqual(Object.keys(TIMER_DEFAULTS).sort());
++});
++
++test('the clock face rounds up, and auto grows an hours field only when needed', () => {
++  expect(formatClock(0)).toBe('00:00');
++  expect(formatClock(1)).toBe('00:01'); // a partial second is still a second on screen
++  expect(formatClock(59_400)).toBe('01:00');
++  expect(formatClock(5 * 60_000)).toBe('05:00');
++  expect(formatClock(-9000)).toBe('00:00');
++  expect(formatClock(3_600_000)).toBe('01:00:00');
++  expect(formatClock(3_600_000, 'mm:ss')).toBe('60:00');
++  expect(formatClock(5 * 60_000, 'hh:mm:ss')).toBe('00:05:00');
++});
+
+```

@@ -2,7 +2,7 @@
 // so they are unit-testable without dragging in next/cache or Auth.js.
 // Mirrors src/lib/settings.ts.
 import prisma from './db';
-import { BUILT_IN, type Style } from './eventTypes';
+import { BUILT_IN, PRESETS, type Style } from './eventTypes';
 import { sendAlert, type Source } from './sendAlert';
 
 export type ConfigPatch = Partial<{
@@ -73,6 +73,12 @@ function cleanStyle(input: unknown): { ok: true; style: Partial<Style> } | { ok:
   if (input.anim !== undefined) {
     if (!ANIMS.includes(input.anim as Style['anim'])) return { ok: false, error: 'style.anim is not a known animation' };
     out.anim = input.anim;
+  }
+  if (input.preset !== undefined) {
+    if (!PRESETS.includes(input.preset as Style['preset'])) {
+      return { ok: false, error: 'style.preset is not a known animation preset' };
+    }
+    out.preset = input.preset;
   }
   // Every other key — `userId` included — is dropped here.
   return { ok: true, style: out as Partial<Style> };

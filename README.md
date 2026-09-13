@@ -85,6 +85,9 @@ POST /api/v1/alerts            (with header: Authorization: Bearer <ingest_key>)
 Both routes run identical logic — the key can travel in the URL path or in
 the header. Use whichever your calling tool makes easier.
 
+Full endpoint reference (all routes, every field rule, error bodies, the
+overlay SSE payload): [docs/api.md](docs/api.md).
+
 ### curl
 
 ```bash

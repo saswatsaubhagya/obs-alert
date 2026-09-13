@@ -703,3 +703,61 @@ input[type='color'].swatch::-moz-color-swatch {
   padding: 8px 12px;
   line-height: 1;
 }
+
+/* API reference page (/docs) */
+.docs-body {
+  gap: 14px;
+  padding-top: 16px;
+  padding-bottom: 18px;
+  line-height: 1.6;
+}
+
+.docs-body h3 {
+  font-size: 14px;
+  margin-top: 6px;
+}
+
+.docs-body ul {
+  display: grid;
+  gap: 8px;
+  padding-left: 18px;
+}
+
+.docs-body pre {
+  overflow-x: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.docs-scroll {
+  overflow-x: auto;
+}
+
+.docs-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.docs-body th,
+.docs-body td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+.docs-body th {
+  color: var(--fg-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.docs-body td code {
+  word-break: break-word;
+}

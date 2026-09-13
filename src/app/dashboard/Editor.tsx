@@ -77,6 +77,8 @@ function draftToPatch(d: Draft): ConfigPatch {
 
 const POSITIONS = ['top-left', 'top', 'top-right', 'center', 'bottom-left', 'bottom', 'bottom-right'];
 const ANIMATIONS = ['fade', 'slide', 'pop'] as const;
+// ponytail: fixed short list; swap for Intl.supportedValuesOf('currency') if someone needs all 150+.
+const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD', 'JPY', 'BRL', 'MXN'];
 
 function describeResult(r: { status: number; body: unknown }): string {
   if (r.status === 200) {
@@ -402,7 +404,18 @@ export default function Editor({
                 <input type="hidden" name="type" value={selectedKey} />
                 {selected.fields.map((f) => (
                   <Field key={f.name} label={f.name + (f.required ? ' (required)' : '')}>
-                    <input name={f.name} type={f.type === 'number' ? 'number' : 'text'} required={f.required} />
+                    {f.name === 'currency' ? (
+                      <select name={f.name} defaultValue="USD" required={f.required}>
+                        {!f.required && <option value="">none</option>}
+                        {CURRENCIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input name={f.name} type={f.type === 'number' ? 'number' : 'text'} required={f.required} />
+                    )}
                   </Field>
                 ))}
                 <div className="preview-foot" style={{ padding: '14px 0 4px' }}>

@@ -22,6 +22,9 @@ export default function Home() {
         <Link href="/login" style={{ padding: '10px 18px' }}>
           Log in
         </Link>
+        <Link href="/docs" className="muted" style={{ padding: '10px 18px' }}>
+          API docs
+        </Link>
       </div>
     </main>
   );

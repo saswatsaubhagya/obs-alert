@@ -355,16 +355,21 @@ legend {
 }
 
 @media (max-width: 900px) {
-  /* Narrow screens default to the collapsed rail, but an explicit
-     data-collapsed="false" (the user toggling it back open) still wins —
-     otherwise the collapse toggle renders, flips its glyph, and writes to
-     localStorage while visibly doing nothing. */
-  .sidebar:not([data-collapsed='false']) {
+  /* Below this width the panel is always the icon rail: there is not enough
+     room for the labels, and `data-collapsed` is never absent (it is "true" or
+     "false"), so no selector can tell a defaulted-open panel from one the user
+     opened. Rather than render a toggle that cannot change anything, the rail
+     is unconditional here and the toggle is hidden. */
+  .sidebar,
+  .sidebar[data-collapsed='false'] {
     width: 58px;
     flex-basis: 58px;
   }
-  .sidebar:not([data-collapsed='false']) .sidebar-label,
-  .sidebar:not([data-collapsed='false']) .sidebar-heading {
+  .sidebar .sidebar-label,
+  .sidebar .sidebar-heading {
+    display: none;
+  }
+  .sidebar-toggle {
     display: none;
   }
 }

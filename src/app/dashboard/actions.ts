@@ -20,7 +20,8 @@ export async function saveConfigAction(eventTypeKey: string, patch: ConfigPatch)
   // 400-shaped result rather than throwing.
   const result = await saveConfigFor(userId, eventTypeKey, patch);
   if (!result.ok) return result;
-  revalidatePath('/dashboard');
+  revalidatePath('/dashboard/w/alerts');
+  revalidatePath('/dashboard/w/win-loss');
   return result;
 }
 

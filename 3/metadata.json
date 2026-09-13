@@ -1,0 +1,86 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2DA25NJ2ZREK1ZGQ949JRAX",
+  "session_id": "cbe67461-f416-45a7-931b-212a52fa5826",
+  "strategy": "manual-commit",
+  "created_at": "2026-09-13T11:57:24.922165Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "prisma/migrations/20260913180000_add_socials/migration.sql",
+    "prisma/schema.prisma",
+    "src/app/(auth)/layout.tsx",
+    "src/app/api/overlay/[token]/events/route.ts",
+    "src/app/dashboard/SidePanel.tsx",
+    "src/app/dashboard/w/socials/SocialsEditor.tsx",
+    "src/app/dashboard/w/socials/actions.ts",
+    "src/app/dashboard/w/socials/page.tsx",
+    "src/app/globals.css",
+    "src/app/overlay/[token]/OverlayClient.tsx",
+    "src/app/page.tsx",
+    "src/lib/eventTypes.ts",
+    "src/lib/socialsConfig.ts",
+    "tests/eventTypes.test.ts",
+    "tests/socialsConfig.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "4cfbef421ed7",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 37619,
+    "cache_read_tokens": 24191,
+    "output_tokens": 280,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-09-13T11:57:24.871077Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 34,
+    "total_committed": 0,
+    "total_lines_changed": 34,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 1182,
+      "user_lines_removed": 34,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "prisma/migrations/20260913180000_add_socials/migration.sql": 3,
+        "prisma/schema.prisma": 4,
+        "src/app/(auth)/layout.tsx": 8,
+        "src/app/api/overlay/[token]/events/route.ts": 12,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/dashboard/w/socials/SocialsEditor.tsx": 298,
+        "src/app/dashboard/w/socials/actions.ts": 21,
+        "src/app/dashboard/w/socials/page.tsx": 20,
+        "src/app/globals.css": 152,
+        "src/app/overlay/[token]/OverlayClient.tsx": 143,
+        "src/app/page.tsx": 106,
+        "src/lib/eventTypes.ts": 2,
+        "src/lib/socialsConfig.ts": 289,
+        "tests/eventTypes.test.ts": 3,
+        "tests/socialsConfig.test.ts": 120
+      },
+      "user_removed_per_file": {
+        "src/app/api/overlay/[token]/events/route.ts": 5,
+        "src/app/dashboard/SidePanel.tsx": 1,
+        "src/app/page.tsx": 24,
+        "src/lib/eventTypes.ts": 1,
+        "tests/eventTypes.test.ts": 3
+      }
+    }
+  ]
+}

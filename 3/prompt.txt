@@ -1,0 +1,1433 @@
+You are generating a single git commit message.
+Return only the commit message text. Do not include a preamble, quotes, or code fences.
+
+Rules:
+- First line: imperative mood, <= 72 chars, no trailing period.
+- Optional body: blank line, then short wrapped bullet points or prose explaining WHY.
+- Capture the primary user-visible or developer-visible change.
+- Use only the staged changes below as context.
+- Do not include "Co-authored-by" or other git trailers.
+
+Branch: master
+
+Staged files:
+A	prisma/migrations/20260913180000_add_socials/migration.sql
+M	prisma/schema.prisma
+A	src/app/(auth)/layout.tsx
+M	src/app/api/overlay/[token]/events/route.ts
+M	src/app/dashboard/SidePanel.tsx
+A	src/app/dashboard/w/socials/SocialsEditor.tsx
+A	src/app/dashboard/w/socials/actions.ts
+A	src/app/dashboard/w/socials/page.tsx
+M	src/app/globals.css
+M	src/app/overlay/[token]/OverlayClient.tsx
+M	src/app/page.tsx
+M	src/lib/eventTypes.ts
+A	src/lib/socialsConfig.ts
+M	tests/eventTypes.test.ts
+A	tests/socialsConfig.test.ts
+
+Staged patch:
+```diff
+diff --git a/prisma/migrations/20260913180000_add_socials/migration.sql b/prisma/migrations/20260913180000_add_socials/migration.sql
+new file mode 100644
+index 0000000..70ed246
+--- /dev/null
++++ b/prisma/migrations/20260913180000_add_socials/migration.sql
+@@ -0,0 +1,3 @@
++-- No accounts configured reads exactly like a user who has never opened the
++-- socials widget, so existing rows need no backfill.
++ALTER TABLE "User" ADD COLUMN "socialsConfig" JSONB;
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 275e9d2..9546892 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -32,6 +32,10 @@ model User {
+   timerEndsAt      DateTime?
+   timerRemainingMs Int           @default(0)
+   timerConfig      Json?
++  // The socials widget's rotating plug list plus its appearance. Json, read and
++  // written whole by src/lib/socialsConfig.ts; nothing about it is queried and
++  // nothing about it moves server-side (the rotation runs in the overlay).
++  socialsConfig    Json?
+   overlays         Overlay[]
+   ingestKeys       IngestKey[]
+   alertConfigs     AlertConfig[]
+diff --git a/src/app/(auth)/layout.tsx b/src/app/(auth)/layout.tsx
+new file mode 100644
+index 0000000..87641e8
+--- /dev/null
++++ b/src/app/(auth)/layout.tsx
+@@ -0,0 +1,8 @@
++import { redirect } from 'next/navigation';
++import { auth } from '@/auth';
++
++// Already signed in? /login and /signup have nothing to offer — go to the app.
++export default async function AuthLayout({ children }: { children: React.ReactNode }) {
++  if (await auth()) redirect('/dashboard');
++  return children;
++}
+diff --git a/src/app/api/overlay/[token]/events/route.ts b/src/app/api/overlay/[token]/events/route.ts
+index 5d90596..663ee85 100644
+--- a/src/app/api/overlay/[token]/events/route.ts
++++ b/src/app/api/overlay/[token]/events/route.ts
+@@ -1,6 +1,7 @@
+ import prisma from '@/lib/db';
+ import { subscribe } from '@/lib/hub';
+ import { getScore } from '@/lib/score';
++import { getSocialsConfig } from '@/lib/socialsConfig';
+ import { getTimer } from '@/lib/timer';
+ 
+ export const dynamic = 'force-dynamic'; // never cache or prerender a live stream
+@@ -10,10 +11,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string
+   const overlay = await prisma.overlay.findUnique({ where: { token } });
+   if (!overlay) return Response.json({ error: 'unknown overlay' }, { status: 404 });
+ 
+-  // The scoreboard and the timer are continuous state, not events: a Browser
+-  // Source that connects (or reconnects mid-stream) has to be told the current
+-  // tally and the current clock, or it shows nothing until the next click.
+-  const [score, timer] = await Promise.all([getScore(overlay.userId), getTimer(overlay.userId)]);
++  // The scoreboard, the timer and the socials rotation are continuous state,
++  // not events: a Browser Source that connects (or reconnects mid-stream) has
++  // to be told the current tally, the current clock and the plug list, or it
++  // shows nothing until the next click.
++  const [score, timer, socials] = await Promise.all([
++    getScore(overlay.userId),
++    getTimer(overlay.userId),
++    getSocialsConfig(overlay.userId),
++  ]);
+ 
+   const encoder = new TextEncoder();
+   let unsubscribe = () => {};
+@@ -27,7 +33,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ token: string
+       push(
+         `: connected\n\n` +
+           `data: ${JSON.stringify({ widget: 'score', ...score })}\n\n` +
+-          `data: ${JSON.stringify({ widget: 'timer', ...timer })}\n\n`
++          `data: ${JSON.stringify({ widget: 'timer', ...timer })}\n\n` +
++          `data: ${JSON.stringify({ widget: 'socials', config: socials })}\n\n`
+       );
+       unsubscribe = subscribe(overlay.userId, push);
+       // Keeps intermediary proxies from idling the connection out.
+diff --git a/src/app/dashboard/SidePanel.tsx b/src/app/dashboard/SidePanel.tsx
+index 8b09ceb..0ce8aa6 100644
+--- a/src/app/dashboard/SidePanel.tsx
++++ b/src/app/dashboard/SidePanel.tsx
+@@ -9,7 +9,7 @@ import { signOutAction } from './actions';
+ /** The signed-in chrome. Rendered by the dashboard layout, and by /docs (which
+  *  sits outside that layout) whenever there is a session. Replaces Nav.tsx. */
+ 
+-const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#', timer: '⏱' };
++const ICONS: Record<string, string> = { alerts: '◎', result: '★', score: '#', timer: '⏱', socials: '@' };
+ 
+ const LINKS = [
+   { href: '/dashboard/settings', label: 'Settings', icon: '⚙' },
+diff --git a/src/app/dashboard/w/socials/SocialsEditor.tsx b/src/app/dashboard/w/socials/SocialsEditor.tsx
+new file mode 100644
+index 0000000..e68713a
+--- /dev/null
++++ b/src/app/dashboard/w/socials/SocialsEditor.tsx
+@@ -0,0 +1,298 @@
++'use client';
++
++import { useEffect, useRef, useState } from 'react';
++import {
++  MAX_ACCOUNTS,
++  PLATFORMS,
++  PLATFORM_META,
++  SOCIALS_ANIMS,
++  SOCIALS_ORDERS,
++  SOCIALS_POSITIONS,
++  type Platform,
++  type SocialsAnim,
++  type SocialsConfig,
++  type SocialsOrder,
++  type SocialsPosition,
++} from '@/lib/socialsConfig';
++import { saveSocialsConfigAction } from './actions';
++import { ColorField, Field, Slider, Toggle } from '../../controls';
++import CopyButton from '../../CopyButton';
++
++export default function SocialsEditor({
++  initial,
++  overlayToken,
++  overlayUrl,
++}: {
++  initial: SocialsConfig;
++  overlayToken: string | null;
++  overlayUrl: string | null;
++}) {
++  const [draft, setDraft] = useState<SocialsConfig>(initial);
++  const [status, setStatus] = useState('');
++  const [busy, setBusy] = useState(false);
++  const [iframeReady, setIframeReady] = useState(0);
++  const iframeRef = useRef<HTMLIFrameElement>(null);
++
++  function patch(p: Partial<SocialsConfig>) {
++    setDraft((d) => ({ ...d, ...p }));
++  }
++
++  function patchAccount(i: number, p: { platform?: Platform; handle?: string }) {
++    setDraft((d) => ({
++      ...d,
++      accounts: d.accounts.map((a, n) => (n === i ? { ...a, ...p } : a)),
++    }));
++  }
++
++  function move(i: number, by: -1 | 1) {
++    setDraft((d) => {
++      const next = [...d.accounts];
++      const to = i + by;
++      if (to < 0 || to >= next.length) return d;
++      [next[i], next[to]] = [next[to], next[i]];
++      return { ...d, accounts: next };
++    });
++  }
++
++  // Debounced 200ms, same as the other editors: the preview paints the
++  // *unsaved* config, so what is on screen is what Save would put on stream.
++  // Each post restarts the rotation in the iframe, which is what makes a
++  // timing change visible without waiting out the current lap.
++  useEffect(() => {
++    const timer = setTimeout(() => {
++      const win = iframeRef.current?.contentWindow;
++      if (!win) return;
++      win.postMessage(
++        { kind: 'preview-alert', alert: { widget: 'socials', config: draft } },
++        window.location.origin
++      );
++    }, 200);
++    return () => clearTimeout(timer);
++  }, [draft, iframeReady]);
++
++  async function onSave() {
++    setBusy(true);
++    setStatus('saving…');
++    const r = await saveSocialsConfigAction(draft);
++    setStatus(r.ok ? 'saved' : `not saved — ${r.error}`);
++    setBusy(false);
++  }
++
++  const full = draft.accounts.length >= MAX_ACCOUNTS;
++
++  return (
++    <div className="editor">
++      <header className="page-head">
++        <div>
++          <h1>Socials</h1>
++          <p className="muted">
++            Your other accounts, one at a time, on a loop — shown for a few seconds, then away
++            again until the next one comes round. Add as many as you like; the rotation runs in
++            the overlay itself, so it keeps going whether or not the dashboard is open.
++          </p>
++        </div>
++      </header>
++
++      {overlayUrl ? (
++        <div className="widget-url">
++          <CopyButton className="url-copy" value={overlayUrl} label="Click To Copy Widget URL" />
++          <a className="btn-primary btn-launch" href={overlayUrl} target="_blank" rel="noreferrer">
++            Launch
++          </a>
++        </div>
++      ) : null}
++
++      <div className="editor-grid">
++        <aside className="side">
++          <h2>Accounts</h2>
++          <div className="social-rows">
++            {draft.accounts.map((a, i) => (
++              <div className="social-row" key={i}>
++                <select
++                  value={a.platform}
++                  aria-label="Network"
++                  onChange={(e) => patchAccount(i, { platform: e.target.value as Platform })}
++                >
++                  {PLATFORMS.map((p) => (
++                    <option key={p} value={p}>
++                      {PLATFORM_META[p].label}
++                    </option>
++                  ))}
++                </select>
++                <input
++                  value={a.handle}
++                  maxLength={40}
++                  placeholder="@handle"
++                  aria-label="Handle"
++                  onChange={(e) => patchAccount(i, { handle: e.target.value })}
++                />
++                <div className="social-row-buttons">
++                  <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label="Move up">
++                    ↑
++                  </button>
++                  <button
++                    type="button"
++                    onClick={() => move(i, 1)}
++                    disabled={i === draft.accounts.length - 1}
++                    aria-label="Move down"
++                  >
++                    ↓
++                  </button>
++                  <button
++                    type="button"
++                    onClick={() => patch({ accounts: draft.accounts.filter((_, n) => n !== i) })}
++                    aria-label="Remove"
++                  >
++                    ✕
++                  </button>
++                </div>
++              </div>
++            ))}
++            {draft.accounts.length === 0 ? (
++              <p className="muted note">No accounts yet — add one and it appears in the preview.</p>
++            ) : null}
++          </div>
++          <button
++            type="button"
++            className="btn-primary"
++            disabled={full}
++            onClick={() => patch({ accounts: [...draft.accounts, { platform: 'twitch', handle: '' }] })}
++          >
++            {full ? `Limit is ${MAX_ACCOUNTS}` : 'Add account'}
++          </button>
++        </aside>
++
++        <div className="col-main">
++          <section className="card">
++            <div className="card-head">
++              <h2>Rotation</h2>
++            </div>
++            <div className="card-body">
++              <Slider
++                label="On screen for"
++                min={1}
++                max={120}
++                value={draft.showSec}
++                onChange={(v) => patch({ showSec: v })}
++                format={(v) => `${v}s`}
++              />
++              <Slider
++                label="Then hidden for"
++                min={0}
++                max={300}
++                step={5}
++                value={draft.gapSec}
++                onChange={(v) => patch({ gapSec: v })}
++                format={(v) => (v === 0 ? 'never hidden' : `${v}s`)}
++              />
++              <Field label="Order">
++                <select
++                  value={draft.order}
++                  onChange={(e) => patch({ order: e.target.value as SocialsOrder })}
++                >
++                  {SOCIALS_ORDERS.map((o) => (
++                    <option key={o} value={o}>
++                      {o === 'list' ? 'in order' : 'random'}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++              <Field label="Animation">
++                <select
++                  value={draft.anim}
++                  onChange={(e) => patch({ anim: e.target.value as SocialsAnim })}
++                >
++                  {SOCIALS_ANIMS.map((a) => (
++                    <option key={a} value={a}>
++                      {a}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++            </div>
++          </section>
++
++          <section className="card">
++            <div className="card-head">
++              <h2>Appearance</h2>
++            </div>
++            <div className="card-body">
++              <Toggle label="Show icon" checked={draft.showIcon} onChange={(v) => patch({ showIcon: v })} />
++              <Toggle
++                label="Icon in the network's colour"
++                checked={draft.useBrandColor}
++                onChange={(v) => patch({ useBrandColor: v })}
++              />
++              <Toggle
++                label="Show network name"
++                checked={draft.showLabel}
++                onChange={(v) => patch({ showLabel: v })}
++              />
++              <Field label="Position">
++                <select
++                  value={draft.pos}
++                  onChange={(e) => patch({ pos: e.target.value as SocialsPosition })}
++                >
++                  {SOCIALS_POSITIONS.map((p) => (
++                    <option key={p} value={p}>
++                      {p}
++                    </option>
++                  ))}
++                </select>
++              </Field>
++              <ColorField label="Handle colour" value={draft.color} onChange={(v) => patch({ color: v })} />
++              <ColorField
++                label="Network name colour"
++                value={draft.labelColor}
++                onChange={(v) => patch({ labelColor: v })}
++              />
++              <ColorField label="Background" value={draft.bg} onChange={(v) => patch({ bg: v })} />
++              <Field label="Font">
++                <input value={draft.font} onChange={(e) => patch({ font: e.target.value })} />
++              </Field>
++              <Slider
++                label="Size"
++                min={12}
++                max={160}
++                value={draft.size}
++                onChange={(v) => patch({ size: v })}
++                format={(v) => `${v}px`}
++              />
++            </div>
++          </section>
++        </div>
++
++        <div className="col-preview">
++          <section className="card">
++            <div className="card-head">
++              <h2>Preview</h2>
++            </div>
++            {overlayToken ? (
++              <div className="preview-stage">
++                <iframe
++                  ref={iframeRef}
++                  src={`/overlay/${overlayToken}?w=socials`}
++                  onLoad={() => setIframeReady((n) => n + 1)}
++                  title="Overlay preview"
++                />
++              </div>
++            ) : (
++              <div className="card-body">
++                <p className="muted note">
++                  No overlay URL yet — set one up on the Settings page, then come back here to preview.
++                </p>
++              </div>
++            )}
++          </section>
++        </div>
++      </div>
++
++      <div className="savebar">
++        <span className="status">{status}</span>
++        <button type="button" className="btn-primary" onClick={onSave} disabled={busy}>
++          Save Settings
++        </button>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/app/dashboard/w/socials/actions.ts b/src/app/dashboard/w/socials/actions.ts
+new file mode 100644
+index 0000000..fab4665
+--- /dev/null
++++ b/src/app/dashboard/w/socials/actions.ts
+@@ -0,0 +1,21 @@
++'use server';
++
++import { revalidatePath } from 'next/cache';
++import { requireUserId } from '@/auth';
++import { publishSocials, saveSocialsConfigFor } from '@/lib/socialsConfig';
++
++// Form entrance: a session-authenticated wrapper over src/lib/socialsConfig.ts.
++// `config` arrives over the wire and TypeScript guarantees nothing about it, so
++// it is validated there field by field and refused with a 400-shaped result
++// rather than thrown.
++
++export async function saveSocialsConfigAction(config: unknown) {
++  const userId = await requireUserId();
++  const result = await saveSocialsConfigFor(userId, config);
++  if (!result.ok) return result;
++  // Every overlay is told immediately, so a saved rotation restarts on stream
++  // without touching the Browser Source.
++  await publishSocials(userId);
++  revalidatePath('/dashboard/w/socials');
++  return result;
++}
+diff --git a/src/app/dashboard/w/socials/page.tsx b/src/app/dashboard/w/socials/page.tsx
+new file mode 100644
+index 0000000..d5dcffe
+--- /dev/null
++++ b/src/app/dashboard/w/socials/page.tsx
+@@ -0,0 +1,20 @@
++import { requireUserId } from '@/auth';
++import prisma from '@/lib/db';
++import { getSocialsConfig } from '@/lib/socialsConfig';
++import SocialsEditor from './SocialsEditor';
++
++export default async function SocialsWidget() {
++  const userId = await requireUserId();
++  const [overlay, config] = await Promise.all([
++    prisma.overlay.findFirst({ where: { userId } }),
++    getSocialsConfig(userId),
++  ]);
++  const base = process.env.PUBLIC_URL ?? 'http://localhost:3000';
++  return (
++    <SocialsEditor
++      initial={config}
++      overlayToken={overlay?.token ?? null}
++      overlayUrl={overlay ? `${base}/overlay/${overlay.token}?w=socials` : null}
++    />
++  );
++}
+diff --git a/src/app/globals.css b/src/app/globals.css
+index e27ef1a..5b3f4f3 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -995,3 +995,155 @@ input[type='color'].swatch::-moz-color-swatch {
+     grid-template-columns: 1fr;
+   }
+ }
++
++/* Socials widget editor: one row per account, in rotation order. */
++.social-rows {
++  display: grid;
++  gap: 8px;
++  margin-bottom: 10px;
++}
++.social-row {
++  display: grid;
++  gap: 6px;
++  padding: 8px;
++  border: 1px solid var(--line);
++  border-radius: 10px;
++  background: var(--bg-elev);
++}
++.social-row-buttons {
++  display: flex;
++  gap: 6px;
++  justify-content: flex-end;
++}
++.social-row-buttons button {
++  padding: 4px 10px;
++  line-height: 1;
++}
++
++/* ---- landing page --------------------------------------------------- */
++
++.landing {
++  width: 100%;
++  max-width: 1040px;
++  margin: 0 auto;
++  padding: 72px 24px 56px;
++  display: grid;
++  gap: 72px;
++}
++
++.landing-hero {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
++  gap: 48px;
++  align-items: center;
++}
++.landing-hero h1 {
++  font-size: clamp(32px, 5vw, 46px);
++  line-height: 1.08;
++  letter-spacing: -0.03em;
++}
++.landing-lede {
++  color: var(--fg-muted);
++  font-size: 15.5px;
++  line-height: 1.65;
++  max-width: 52ch;
++}
++.landing-cta {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 10px;
++  align-items: center;
++}
++.landing-cta .btn-primary,
++.landing-cta .btn-ghost {
++  padding: 11px 20px;
++  border-radius: 9px;
++  font-size: 13.5px;
++  font-weight: 500;
++}
++.landing-cta .btn-ghost {
++  border: 1px solid var(--line-strong);
++  color: var(--fg);
++}
++.landing-cta .btn-ghost:hover {
++  border-color: var(--fg-muted);
++  text-decoration: none;
++}
++
++/* the request/response demo beside the hero */
++.landing-code {
++  overflow: hidden;
++  padding: 0;
++}
++.landing-code header {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 10px 14px;
++  border-bottom: 1px solid var(--line);
++  font-family: var(--mono);
++  font-size: 11.5px;
++  letter-spacing: 0.06em;
++  text-transform: uppercase;
++  color: var(--fg-muted);
++}
++.landing-code pre {
++  margin: 0;
++  padding: 16px 14px;
++  font-family: var(--mono);
++  font-size: 12px;
++  line-height: 1.65;
++  color: #cdc4ff;
++  overflow-x: auto;
++}
++
++.landing-section > h2 {
++  margin-bottom: 18px;
++}
++.landing-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
++  gap: 14px;
++}
++.landing-card {
++  display: grid;
++  gap: 8px;
++  align-content: start;
++}
++.landing-card h3 {
++  font-size: 14px;
++  font-weight: 600;
++  letter-spacing: -0.01em;
++}
++.landing-card p {
++  color: var(--fg-muted);
++  font-size: 13px;
++  line-height: 1.6;
++}
++.landing-step {
++  font-family: var(--mono);
++  font-size: 11px;
++  color: var(--accent);
++  letter-spacing: 0.12em;
++}
++
++.landing-foot {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 16px;
++  align-items: center;
++  justify-content: space-between;
++  border-top: 1px solid var(--line);
++  padding-top: 20px;
++}
++
++@media (max-width: 860px) {
++  .landing {
++    gap: 56px;
++    padding-top: 48px;
++  }
++  .landing-hero {
++    grid-template-columns: minmax(0, 1fr);
++    gap: 28px;
++  }
++}
+diff --git a/src/app/overlay/[token]/OverlayClient.tsx b/src/app/overlay/[token]/OverlayClient.tsx
+index 72daa64..398cb3e 100644
+--- a/src/app/overlay/[token]/OverlayClient.tsx
++++ b/src/app/overlay/[token]/OverlayClient.tsx
+@@ -5,6 +5,12 @@ import { createPreviewSlot, createQueue } from '@/lib/queue';
+ import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
+ import { parseScoreConfig, type ScoreConfig } from '@/lib/scoreConfig';
+ import { formatClock, parseTimerConfig, type TimerConfig } from '@/lib/timerConfig';
++import {
++  PLATFORM_META,
++  parseSocialsConfig,
++  type SocialAccount,
++  type SocialsConfig,
++} from '@/lib/socialsConfig';
+ import type { AlertPayload } from '@/lib/render';
+ 
+ const POS: Record<string, string> = {
+@@ -162,6 +168,116 @@ export default function OverlayClient({
+       paintTimer();
+     };
+ 
++    /** The socials widget: one element, like the scoreboard and the timer, but
++     *  it also drives itself. The server only ever says "here is the config";
++     *  which account is on screen, and when it steps to the next one, is this
++     *  timer chain. A config frame restarts the chain from the top, so an edit
++     *  in the dashboard is visible immediately instead of at the end of the
++     *  current lap. */
++    let socials: {
++      el: HTMLDivElement;
++      icon: SVGSVGElement;
++      label: HTMLElement;
++      handle: HTMLElement;
++    } | null = null;
++    let socialsTimer: ReturnType<typeof setTimeout> | undefined;
++    let socialsIdx = 0;
++
++    const SVG_NS = 'http://www.w3.org/2000/svg';
++
++    /** Draws a platform glyph. Every value comes from PLATFORM_META — ours,
++     *  never the user's — and is set with setAttribute rather than innerHTML,
++     *  so the icons go through the same no-markup rule as the text. */
++    const paintIcon = (svg: SVGSVGElement, platform: SocialAccount['platform']) => {
++      svg.replaceChildren();
++      for (const shape of PLATFORM_META[platform].icon) {
++        const node = document.createElementNS(SVG_NS, shape.t === 'rect' ? 'rect' : shape.t);
++        if (shape.t === 'path') node.setAttribute('d', shape.d);
++        if (shape.t === 'circle') {
++          node.setAttribute('cx', String(shape.cx));
++          node.setAttribute('cy', String(shape.cy));
++          node.setAttribute('r', String(shape.r));
++        }
++        if (shape.t === 'rect') {
++          node.setAttribute('x', String(shape.x));
++          node.setAttribute('y', String(shape.y));
++          node.setAttribute('width', String(shape.w));
++          node.setAttribute('height', String(shape.h));
++          node.setAttribute('rx', String(shape.rx));
++        }
++        svg.append(node);
++      }
++    };
++
++    const paintSocial = (acc: SocialAccount, c: SocialsConfig) => {
++      if (!socials) return;
++      const meta = PLATFORM_META[acc.platform];
++      socials.el.style.setProperty('--icon', c.useBrandColor ? meta.brand : c.color);
++      socials.label.textContent = meta.label;
++      socials.handle.textContent = acc.handle;
++      if (c.showIcon) paintIcon(socials.icon, acc.platform);
++      socials.el.dataset.icon = c.showIcon ? 'on' : 'off';
++      socials.el.dataset.labels = c.showLabel ? 'on' : 'off';
++    };
++
++    const cycleSocials = (c: SocialsConfig) => {
++      if (!socials) return;
++      if (c.accounts.length === 0) {
++        socials.el.dataset.on = 'off';
++        return;
++      }
++      const acc =
++        c.order === 'random' ? pick(c.accounts) : c.accounts[socialsIdx % c.accounts.length];
++      socialsIdx++;
++      paintSocial(acc, c);
++      socials.el.dataset.on = 'on';
++      // One account with no gap is a permanent plug: nothing left to schedule.
++      if (c.gapSec === 0 && c.accounts.length === 1) return;
++      socialsTimer = setTimeout(() => {
++        if (c.gapSec === 0) {
++          cycleSocials(c);
++          return;
++        }
++        if (socials) socials.el.dataset.on = 'off';
++        socialsTimer = setTimeout(() => cycleSocials(c), c.gapSec * 1000);
++      }, c.showSec * 1000);
++    };
++
++    const showSocials = (raw: unknown) => {
++      // The config arrives over the wire; parseSocialsConfig falls back to the
++      // defaults per field rather than letting a bad value reach cssText.
++      const c: SocialsConfig = parseSocialsConfig(raw);
++      if (!socials) {
++        const el = document.createElement('div');
++        el.className = 'socials';
++        const icon = document.createElementNS(SVG_NS, 'svg');
++        icon.setAttribute('viewBox', '0 0 24 24');
++        icon.setAttribute('class', 'social-icon');
++        const text = document.createElement('div');
++        text.className = 'social-text';
++        const label = document.createElement('div');
++        label.className = 'social-label';
++        const handle = document.createElement('div');
++        handle.className = 'social-handle';
++        text.append(label, handle);
++        el.append(icon, text);
++        root.append(el);
++        socials = { el, icon, label, handle };
++      }
++      socials.el.className = `socials anim-${c.anim}`;
++      socials.el.style.cssText = [
++        POS[c.pos] ?? POS['bottom-left'],
++        `--fg:${c.color}`,
++        `--label:${c.labelColor}`,
++        `--bg:${c.bg}`,
++        `--font:${c.font}`,
++        `--size:${c.size}px`,
++      ].join(';');
++      clearTimeout(socialsTimer);
++      socialsIdx = 0;
++      cycleSocials(c);
++    };
++
+     /** Appends card to root, triggers animation, and handles audio.
+      *  Returns the { card, audio } shape for scheduleHide to work on both
+      *  renderers identically. */
+@@ -394,6 +510,10 @@ export default function OverlayClient({
+           showTimer(f.running === true, f.remainingMs ?? 0, f.config);
+           return;
+         }
++        if (a.widget === 'socials') {
++          showSocials((a as unknown as { config?: unknown }).config);
++          return;
++        }
+         queue.push(a);
+       } catch {
+         /* ignore a malformed frame */
+@@ -419,6 +539,10 @@ export default function OverlayClient({
+         showTimer(f.running === true, f.remainingMs ?? 0, f.config);
+         return;
+       }
++      if (a.widget === 'socials') {
++        showSocials((a as unknown as { config?: unknown }).config);
++        return;
++      }
+       previewSlot.show(a);
+     };
+     window.addEventListener('message', onMessage);
+@@ -428,6 +552,7 @@ export default function OverlayClient({
+       window.removeEventListener('message', onMessage);
+       previewSlot.clear();
+       clearInterval(ticking);
++      clearTimeout(socialsTimer);
+     };
+   }, [token, widget]);
+ 
+@@ -470,6 +595,24 @@ export default function OverlayClient({
+         .timer[data-warn="on"] .timer-time{color:var(--warn);animation:timer-pulse 1s ease-in-out infinite}
+         @keyframes timer-pulse{50%{opacity:.55}}
+ 
++        .socials{position:fixed;display:flex;align-items:center;gap:.45em;
++          padding:.3em .6em;border-radius:.25em;background:var(--bg);
++          font-family:var(--font);font-size:var(--size);color:var(--fg);
++          line-height:1.05;white-space:nowrap;opacity:0;
++          transition:opacity .4s ease, translate .4s ease, scale .4s ease}
++        .socials[data-on="on"]{opacity:1}
++        .socials.anim-slide{translate:0 14px}
++        .socials.anim-slide[data-on="on"]{translate:0 0}
++        .socials.anim-pop{scale:.88}
++        .socials.anim-pop[data-on="on"]{scale:1}
++        .social-icon{width:1.15em;height:1.15em;flex:none;fill:none;
++          stroke:var(--icon);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
++        .socials[data-icon="off"] .social-icon{display:none}
++        .social-label{font-size:.3em;font-weight:800;letter-spacing:.2em;
++          text-transform:uppercase;color:var(--label);opacity:.7;margin-bottom:.25em}
++        .socials[data-labels="off"] .social-label{display:none}
++        .social-handle{font-weight:800;letter-spacing:-.01em}
++
+         .result{position:fixed;inset:0;display:grid;place-items:center;
+           font-family:var(--font);color:var(--fg);opacity:0;transition:opacity .3s}
+         .result.in{opacity:1}
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 4aab96c..3b682a2 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,31 +1,113 @@
+ import Link from 'next/link';
++import { redirect } from 'next/navigation';
++import { auth } from '@/auth';
++
++const STEPS = [
++  {
++    step: 'STEP 01',
++    title: 'Paste one URL into OBS',
++    body: 'Every widget gets its own overlay URL. Drop it into an OBS Browser Source — no plugin, no local software, no restart.',
++  },
++  {
++    step: 'STEP 02',
++    title: 'Point your automation at the key',
++    body: 'n8n, Zapier, a chatbot, a donation processor, curl — anything that can POST JSON to an HTTP endpoint with a bearer key.',
++  },
++  {
++    step: 'STEP 03',
++    title: 'Design it in the dashboard',
++    body: 'Colours, sounds, duration and animation per event type, with a live preview of the exact overlay your viewers will see.',
++  },
++];
++
++const WIDGETS = [
++  { title: 'Alerts', body: 'Donation, follow, sub and raid alerts, each with its own styling and sound.' },
++  { title: 'Win / Loss', body: 'Fire a win or loss animation from the control dock or the API.' },
++  { title: 'Scoreboard', body: 'A server-held tally that survives refreshes and scene switches.' },
++  { title: 'Timer', body: 'Server-held countdown, driven from the dock so the overlay stays in sync.' },
++  { title: 'Socials', body: 'A rotating handle bar for the platforms you actually stream to.' },
++];
++
++export default async function Home() {
++  if (await auth()) redirect('/dashboard');
+ 
+-export default function Home() {
+   return (
+-    <main style={{ maxWidth: 620, margin: '14vh auto', padding: '0 24px', display: 'grid', gap: 24 }}>
+-      <div style={{ display: 'grid', gap: 14 }}>
+-        <span className="chip" style={{ justifySelf: 'start' }}>
+-          POST → on-stream
++    <main className="landing">
++      <section className="landing-hero">
++        <div style={{ display: 'grid', gap: 18 }}>
++          <span className="chip" style={{ justifySelf: 'start' }}>
++            POST → on-stream
++          </span>
++          <h1>Stream alerts driven by your own automations.</h1>
++          <p className="landing-lede">
++            OBS Alert Platform turns an HTTP request into an on-stream overlay. Sign in for an overlay URL to paste
++            into an OBS Browser Source and an ingest key to point your tooling at — then design every alert in the
++            dashboard with a live preview.
++          </p>
++          <div className="landing-cta">
++            <Link href="/signup" className="btn-primary">
++              Create an account
++            </Link>
++            <Link href="/login" className="btn-ghost">
++              Log in
++            </Link>
++            <Link href="/docs" className="muted" style={{ padding: '11px 8px' }}>
++              Read the API docs →
++            </Link>
++          </div>
++        </div>
++
++        <div className="panel landing-code">
++          <header>POST /api/v1/alerts</header>
++          <pre>{`curl -X POST https://…/api/v1/alerts \\
++  -H 'authorization: Bearer oba_XXXXXXXXXXXX' \\
++  -H 'content-type: application/json' \\
++  -d '{
++    "type": "donation",
++    "name": "bob",
++    "amount": 25,
++    "currency": "USD",
++    "message": "keep it up!"
++  }'`}</pre>
++        </div>
++      </section>
++
++      <section className="landing-section">
++        <h2>How it works</h2>
++        <div className="landing-grid">
++          {STEPS.map((s) => (
++            <div key={s.step} className="panel landing-card">
++              <span className="landing-step">{s.step}</span>
++              <h3>{s.title}</h3>
++              <p>{s.body}</p>
++            </div>
++          ))}
++        </div>
++      </section>
++
++      <section className="landing-section">
++        <h2>Widgets</h2>
++        <div className="landing-grid">
++          {WIDGETS.map((w) => (
++            <div key={w.title} className="panel landing-card">
++              <h3>{w.title}</h3>
++              <p>{w.body}</p>
++            </div>
++          ))}
++        </div>
++      </section>
++
++      <footer className="landing-foot">
++        <span className="muted">OBS Alert Platform</span>
++        <span style={{ display: 'flex', gap: 18 }}>
++          <Link href="/docs" className="muted">
++            API docs
++          </Link>
++          <Link href="/login" className="muted">
++            Log in
++          </Link>
+         </span>
+-        <h1 style={{ fontSize: 40, lineHeight: 1.1 }}>OBS Alert Platform</h1>
+-        <p className="muted" style={{ fontSize: 15, lineHeight: 1.6 }}>
+-          Turn an HTTP request — from n8n, Zapier, a chatbot, a donation processor, anything that can POST JSON —
+-          into an on-stream alert in OBS. Sign in to get an overlay URL to paste into an OBS Browser Source and an
+-          ingest key to point your automation at, then design the donation, follow, sub and raid alerts in the
+-          dashboard with a live preview.
+-        </p>
+-      </div>
+-      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+-        <Link href="/signup" className="btn-primary" style={{ padding: '10px 18px', borderRadius: 8, color: '#fff' }}>
+-          Create an account
+-        </Link>
+-        <Link href="/login" style={{ padding: '10px 18px' }}>
+-          Log in
+-        </Link>
+-        <Link href="/docs" className="muted" style={{ padding: '10px 18px' }}>
+-          API docs
+-        </Link>
+-      </div>
++      </footer>
+     </main>
+   );
+ }
+diff --git a/src/lib/eventTypes.ts b/src/lib/eventTypes.ts
+index 267f07a..b8bb9a2 100644
+--- a/src/lib/eventTypes.ts
++++ b/src/lib/eventTypes.ts
+@@ -1,7 +1,7 @@
+ export type FieldType = 'string' | 'number';
+ export type Field = { name: string; type: FieldType; required: boolean };
+ 
+-export type Widget = 'alerts' | 'result' | 'score' | 'timer';
++export type Widget = 'alerts' | 'result' | 'score' | 'timer' | 'socials';
+ 
+ /** Every widget, in sidebar order. One overlay token serves them all; a
+  *  `?w=<id>` on the overlay URL narrows a Browser Source to a single widget,
+@@ -12,6 +12,7 @@ export const WIDGETS: readonly { id: Widget; label: string; href: string }[] = [
+   { id: 'result', label: 'Win / Loss', href: '/dashboard/w/win-loss' },
+   { id: 'score', label: 'Scoreboard', href: '/dashboard/w/score' },
+   { id: 'timer', label: 'Timer', href: '/dashboard/w/timer' },
++  { id: 'socials', label: 'Socials', href: '/dashboard/w/socials' },
+ ];
+ 
+ /** Narrows an untrusted `?w=` value to a Widget, or null for "all widgets". */
+diff --git a/src/lib/socialsConfig.ts b/src/lib/socialsConfig.ts
+new file mode 100644
+index 0000000..637c208
+--- /dev/null
++++ b/src/lib/socialsConfig.ts
+@@ -0,0 +1,289 @@
++// The socials widget: a rotating plug for the streamer's other accounts. Like
++// the scoreboard and the timer it is state the overlay shows continuously, but
++// unlike them nothing about it moves on the server — the rotation is a timer
++// in the Browser Source, so the only thing stored is this config and the only
++// thing published is "the config changed".
++//
++// Plain module (no 'use server'), same shape as src/lib/timerConfig.ts:
++// functions take userId explicitly and every value that reaches Prisma or the
++// overlay is rebuilt field by field here.
++import { CSS_UNSAFE } from './alertConfig';
++import prisma from './db';
++import { publish } from './hub';
++import { SCORE_POSITIONS, type ScorePosition } from './scoreConfig';
++
++// Same seven places the scoreboard and the timer hang in.
++export const SOCIALS_POSITIONS = SCORE_POSITIONS;
++export type SocialsPosition = ScorePosition;
++
++export const SOCIALS_ORDERS = ['list', 'random'] as const;
++export type SocialsOrder = (typeof SOCIALS_ORDERS)[number];
++
++export const SOCIALS_ANIMS = ['fade', 'slide', 'pop'] as const;
++export type SocialsAnim = (typeof SOCIALS_ANIMS)[number];
++
++/** An icon as data rather than markup: the overlay builds each shape with
++ *  createElementNS, so nothing here is ever handed to innerHTML. Every icon is
++ *  a 24×24 line drawing — strokes only, `currentColor` — so the set stays
++ *  visually consistent and inherits the handle's colour. */
++export type IconShape =
++  | { t: 'path'; d: string }
++  | { t: 'circle'; cx: number; cy: number; r: number }
++  | { t: 'rect'; x: number; y: number; w: number; h: number; rx: number };
++
++export const PLATFORMS = [
++  'twitch',
++  'youtube',
++  'kick',
++  'instagram',
++  'tiktok',
++  'x',
++  'discord',
++] as const;
++export type Platform = (typeof PLATFORMS)[number];
++
++export const PLATFORM_META: Record<
++  Platform,
++  { label: string; brand: string; icon: IconShape[] }
++> = {
++  twitch: {
++    label: 'Twitch',
++    brand: '#9146ff',
++    icon: [
++      { t: 'path', d: 'M4 3h16v11l-4 4h-4l-3 3H7v-3H4z' },
++      { t: 'path', d: 'M10 8v4' },
++      { t: 'path', d: 'M15 8v4' },
++    ],
++  },
++  youtube: {
++    label: 'YouTube',
++    brand: '#ff0000',
++    icon: [
++      { t: 'rect', x: 2, y: 5, w: 20, h: 14, rx: 4 },
++      { t: 'path', d: 'M10 9l6 3-6 3z' },
++    ],
++  },
++  kick: {
++    label: 'Kick',
++    brand: '#53fc18',
++    icon: [
++      { t: 'path', d: 'M5 4v16' },
++      { t: 'path', d: 'M5 12h3l5-8h4l-6 8 6 8h-4l-5-8' },
++    ],
++  },
++  instagram: {
++    label: 'Instagram',
++    brand: '#e1306c',
++    icon: [
++      { t: 'rect', x: 3, y: 3, w: 18, h: 18, rx: 5 },
++      { t: 'circle', cx: 12, cy: 12, r: 4 },
++      { t: 'circle', cx: 17, cy: 7, r: 0.8 },
++    ],
++  },
++  tiktok: {
++    label: 'TikTok',
++    brand: '#25f4ee',
++    icon: [
++      { t: 'path', d: 'M14 4v10a4 4 0 1 1-4-4' },
++      { t: 'path', d: 'M14 4c.9 2.2 2.6 3.4 5 3.6' },
++    ],
++  },
++  x: {
++    label: 'X',
++    brand: '#ffffff',
++    icon: [
++      { t: 'path', d: 'M5 5l14 14' },
++      { t: 'path', d: 'M19 5L5 19' },
++    ],
++  },
++  discord: {
++    label: 'Discord',
++    brand: '#5865f2',
++    icon: [
++      { t: 'path', d: 'M9 7a13 13 0 0 1 6 0' },
++      { t: 'path', d: 'M9 17a13 13 0 0 0 6 0' },
++      { t: 'path', d: 'M9 7c-2 2.6-2.6 6-2.2 9.2L10 18l1-1.8' },
++      { t: 'path', d: 'M15 7c2 2.6 2.6 6 2.2 9.2L14 18l-1-1.8' },
++      { t: 'circle', cx: 9.8, cy: 12.6, r: 1 },
++      { t: 'circle', cx: 14.2, cy: 12.6, r: 1 },
++    ],
++  },
++};
++
++export type SocialAccount = { platform: Platform; handle: string };
++
++export type SocialsConfig = {
++  accounts: SocialAccount[];
++  /** Seconds one account stays on screen. */
++  showSec: number;
++  /** Seconds of nothing between accounts. 0 keeps one on screen at all times. */
++  gapSec: number;
++  order: SocialsOrder;
++  showIcon: boolean;
++  /** Paint the icon in the platform's own colour instead of `color`. */
++  useBrandColor: boolean;
++  showLabel: boolean;
++  color: string;
++  labelColor: string;
++  bg: string;
++  font: string;
++  size: number;
++  pos: SocialsPosition;
++  anim: SocialsAnim;
++};
++
++export const SOCIALS_DEFAULTS: SocialsConfig = {
++  accounts: [],
++  showSec: 6,
++  gapSec: 20,
++  order: 'list',
++  showIcon: true,
++  useBrandColor: true,
++  showLabel: true,
++  color: '#ffffff',
++  labelColor: '#ffffff',
++  bg: 'rgba(12,12,16,0.72)',
++  font: 'system-ui, sans-serif',
++  size: 40,
++  pos: 'bottom-left',
++  anim: 'slide',
++};
++
++// Handles are written with textContent, never innerHTML, so markup in them is
++// inert — the caps are about layout, not safety.
++export const MAX_ACCOUNTS = 12;
++const HANDLE_MAX = 40;
++const SIZE_MIN = 12;
++const SIZE_MAX = 160;
++const SHOW_MIN = 1;
++const SHOW_MAX = 120;
++const GAP_MAX = 3600;
++
++// Colours, `bg` and `font` are injected verbatim into the widget's cssText,
++// exactly like an alert card's style values, so they get the same refusal.
++const COLOR_KEYS = ['color', 'labelColor', 'bg', 'font'] as const;
++const BOOL_KEYS = ['showIcon', 'useBrandColor', 'showLabel'] as const;
++
++export type CleanResult = { ok: true; config: SocialsConfig } | { ok: false; error: string };
++
++function cleanAccounts(raw: unknown): { ok: true; accounts: SocialAccount[] } | { ok: false; error: string } {
++  if (!Array.isArray(raw)) return { ok: false, error: 'accounts must be an array' };
++  if (raw.length > MAX_ACCOUNTS) return { ok: false, error: `accounts must hold at most ${MAX_ACCOUNTS} entries` };
++  const accounts: SocialAccount[] = [];
++  for (const entry of raw) {
++    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
++      return { ok: false, error: 'each account must be an object' };
++    }
++    const e = entry as Record<string, unknown>;
++    const platform = PLATFORMS.find((p) => p === e.platform);
++    if (!platform) return { ok: false, error: 'platform is not a known network' };
++    if (typeof e.handle !== 'string') return { ok: false, error: 'handle must be a string' };
++    const handle = e.handle.trim().slice(0, HANDLE_MAX);
++    // An account with nothing to show is dropped rather than refused: it is
++    // the half-filled row an editor always has one of.
++    if (!handle) continue;
++    // Rebuilt, not spread: anything else the row carried is left behind.
++    accounts.push({ platform, handle });
++  }
++  return { ok: true, accounts };
++}
++
++/** Rebuilds a full config from untrusted input: session-form input on the way
++ *  in, and a Json column that an older version may have written on the way
++ *  out. Unknown keys — `userId` included — are dropped, not spread. */
++export function cleanSocialsConfig(raw: unknown): CleanResult {
++  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
++    return { ok: false, error: 'config must be an object' };
++  }
++  const input = raw as Record<string, unknown>;
++  const out: SocialsConfig = { ...SOCIALS_DEFAULTS, accounts: [] };
++
++  if (input.accounts !== undefined) {
++    const accounts = cleanAccounts(input.accounts);
++    if (!accounts.ok) return accounts;
++    out.accounts = accounts.accounts;
++  }
++
++  for (const k of BOOL_KEYS) {
++    const v = input[k];
++    if (v === undefined) continue;
++    if (typeof v !== 'boolean') return { ok: false, error: `${k} must be a boolean` };
++    out[k] = v;
++  }
++
++  for (const k of COLOR_KEYS) {
++    const v = input[k];
++    if (v === undefined) continue;
++    if (typeof v !== 'string') return { ok: false, error: `${k} must be a string` };
++    if (CSS_UNSAFE.test(v)) {
++      return { ok: false, error: `${k} contains characters that are not allowed in a style value` };
++    }
++    out[k] = v;
++  }
++
++  const num = (k: 'showSec' | 'gapSec' | 'size', min: number, max: number) => {
++    const v = input[k];
++    if (v === undefined) return true;
++    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
++    out[k] = Math.round(Math.min(max, Math.max(min, v)));
++    return true;
++  };
++  if (!num('showSec', SHOW_MIN, SHOW_MAX)) return { ok: false, error: 'showSec must be a number' };
++  if (!num('gapSec', 0, GAP_MAX)) return { ok: false, error: 'gapSec must be a number' };
++  if (!num('size', SIZE_MIN, SIZE_MAX)) return { ok: false, error: 'size must be a number' };
++
++  if (input.order !== undefined) {
++    const order = SOCIALS_ORDERS.find((o) => o === input.order);
++    if (!order) return { ok: false, error: 'order is not a known rotation order' };
++    out.order = order;
++  }
++
++  if (input.anim !== undefined) {
++    const anim = SOCIALS_ANIMS.find((a) => a === input.anim);
++    if (!anim) return { ok: false, error: 'anim is not a known animation' };
++    out.anim = anim;
++  }
++
++  if (input.pos !== undefined) {
++    const pos = SOCIALS_POSITIONS.find((p) => p === input.pos);
++    if (!pos) return { ok: false, error: 'pos is not a known position' };
++    out.pos = pos;
++  }
++
++  return { ok: true, config: out };
++}
++
++/** Read path: a stored config that fails validation (hand-edited row, a field
++ *  this version no longer knows) falls back to the defaults rather than
++ *  breaking the overlay. */
++export function parseSocialsConfig(raw: unknown): SocialsConfig {
++  if (raw === null || raw === undefined) return { ...SOCIALS_DEFAULTS, accounts: [] };
++  const cleaned = cleanSocialsConfig(raw);
++  return cleaned.ok ? cleaned.config : { ...SOCIALS_DEFAULTS, accounts: [] };
++}
++
++export async function getSocialsConfig(userId: string): Promise<SocialsConfig> {
++  const row = await prisma.user.findUnique({ where: { id: userId }, select: { socialsConfig: true } });
++  return parseSocialsConfig(row?.socialsConfig);
++}
++
++/** Fans the current config out to every overlay of this user, so a saved
++ *  appearance lands on stream without touching the Browser Source. */
++export async function publishSocials(userId: string): Promise<SocialsConfig> {
++  const config = await getSocialsConfig(userId);
++  publish(userId, { widget: 'socials', config });
++  return config;
++}
++
++export type SaveSocialsResult =
++  | { ok: true; config: SocialsConfig }
++  | { ok: false; status: 400; error: string };
++
++export async function saveSocialsConfigFor(userId: string, raw: unknown): Promise<SaveSocialsResult> {
++  const cleaned = cleanSocialsConfig(raw);
++  if (!cleaned.ok) return { ok: false, status: 400, error: cleaned.error };
++  // `where` is the session's own id and `data` is the rebuilt object — nothing
++  // from the caller's body can select or write another tenant's row.
++  await prisma.user.update({ where: { id: userId }, data: { socialsConfig: cleaned.config } });
++  return { ok: true, config: cleaned.config };
++}
+diff --git a/tests/eventTypes.test.ts b/tests/eventTypes.test.ts
+index bb04773..a2797e6 100644
+--- a/tests/eventTypes.test.ts
++++ b/tests/eventTypes.test.ts
+@@ -55,9 +55,9 @@ test('parseWidget accepts only known widget ids, everything else is all-widgets'
+ 
+ test('every event-driven widget in WIDGETS is one some event type renders', () => {
+   const used = new Set(Object.values(BUILT_IN).map((t) => t.widget));
+-  // 'score' and 'timer' are the exceptions on purpose: they render server-held
+-  // state, not events, so no BUILT_IN entry points at either.
+-  const stateful = new Set(['score', 'timer']);
++  // 'score', 'timer' and 'socials' are the exceptions on purpose: they render
++  // stored state, not events, so no BUILT_IN entry points at any of them.
++  const stateful = new Set(['score', 'timer', 'socials']);
+   const driven = WIDGETS.filter((w) => !stateful.has(w.id));
+   for (const w of driven) expect(used.has(w.id), w.id).toBe(true);
+   expect(driven.length).toBe(used.size);
+diff --git a/tests/socialsConfig.test.ts b/tests/socialsConfig.test.ts
+new file mode 100644
+index 0000000..b44814a
+--- /dev/null
++++ b/tests/socialsConfig.test.ts
+@@ -0,0 +1,120 @@
++import { beforeEach, expect, test } from 'vitest';
++import {
++  MAX_ACCOUNTS,
++  SOCIALS_DEFAULTS,
++  cleanSocialsConfig,
++  getSocialsConfig,
++  parseSocialsConfig,
++  saveSocialsConfigFor,
++} from '@/lib/socialsConfig';
++import { makeUser, resetDb } from './helpers/db';
++
++beforeEach(async () => {
++  await resetDb();
++});
++
++test('an empty patch is the defaults, and known fields are kept', () => {
++  expect(cleanSocialsConfig({})).toEqual({ ok: true, config: SOCIALS_DEFAULTS });
++  const r = cleanSocialsConfig({
++    accounts: [{ platform: 'twitch', handle: '@me' }],
++    showSec: 3,
++    gapSec: 0,
++    order: 'random',
++    anim: 'pop',
++    pos: 'top-right',
++  });
++  expect(r).toMatchObject({
++    ok: true,
++    config: {
++      accounts: [{ platform: 'twitch', handle: '@me' }],
++      showSec: 3,
++      gapSec: 0,
++      order: 'random',
++      anim: 'pop',
++      pos: 'top-right',
++    },
++  });
++});
++
++test('unknown keys are dropped rather than spread, on the config and on a row', () => {
++  const r = cleanSocialsConfig({
++    userId: 'someone-else',
++    id: 'x',
++    accounts: [{ platform: 'kick', handle: 'me', userId: 'someone-else', url: 'javascript:x' }],
++  });
++  expect(r.ok).toBe(true);
++  if (!r.ok) return;
++  expect(Object.keys(r.config).sort()).toEqual(Object.keys(SOCIALS_DEFAULTS).sort());
++  expect(r.config.accounts).toEqual([{ platform: 'kick', handle: 'me' }]);
++});
++
++test('a CSS-unsafe colour is a 400-shaped refusal', () => {
++  for (const bad of [
++    { color: 'red;background:url(https://evil/x)' },
++    { labelColor: 'url(https://evil/x)' },
++    { font: 'a}body{display:none' },
++  ]) {
++    expect(cleanSocialsConfig(bad).ok, JSON.stringify(bad)).toBe(false);
++  }
++});
++
++test('wrong types and unknown enum values are refused', () => {
++  for (const bad of [
++    { showIcon: 'yes' },
++    { showSec: 'fast' },
++    { gapSec: Number.NaN },
++    { size: 'big' },
++    { order: 'shuffle' },
++    { anim: 'explode' },
++    { pos: 'middle-left' },
++    { accounts: 'twitch' },
++    { accounts: [{ platform: 'myspace', handle: 'me' }] },
++    { accounts: [{ platform: 'x', handle: 7 }] },
++    { accounts: [null] },
++    'not an object',
++    null,
++    [],
++  ]) {
++    expect(cleanSocialsConfig(bad).ok, JSON.stringify(bad)).toBe(false);
++  }
++});
++
++test('blank handles drop out, caps clamp, and the list has a ceiling', () => {
++  const r = cleanSocialsConfig({
++    accounts: [
++      { platform: 'x', handle: '  ' },
++      { platform: 'x', handle: '  spaced  ' },
++    ],
++    showSec: 9999,
++    gapSec: -5,
++    size: 1,
++  });
++  expect(r).toEqual({
++    ok: true,
++    config: { ...SOCIALS_DEFAULTS, accounts: [{ platform: 'x', handle: 'spaced' }], showSec: 120, gapSec: 0, size: 12 },
++  });
++
++  const tooMany = Array.from({ length: MAX_ACCOUNTS + 1 }, () => ({ platform: 'x', handle: 'me' }));
++  expect(cleanSocialsConfig({ accounts: tooMany }).ok).toBe(false);
++});
++
++test('a stored row that no longer validates reads as the defaults', () => {
++  expect(parseSocialsConfig(null)).toEqual(SOCIALS_DEFAULTS);
++  expect(parseSocialsConfig({ pos: 'nowhere' })).toEqual(SOCIALS_DEFAULTS);
++});
++
++test('saving round-trips through the row, and bad input is a 400', async () => {
++  const { user } = await makeUser();
++  const saved = await saveSocialsConfigFor(user.id, {
++    accounts: [{ platform: 'youtube', handle: '@chan' }],
++    showSec: 4,
++  });
++  expect(saved.ok).toBe(true);
++  const read = await getSocialsConfig(user.id);
++  expect(read.accounts).toEqual([{ platform: 'youtube', handle: '@chan' }]);
++  expect(read.showSec).toBe(4);
++
++  expect(await saveSocialsConfigFor(user.id, { size: 'big' })).toMatchObject({ ok: false, status: 400 });
++  // The refused save left the stored config alone.
++  expect((await getSocialsConfig(user.id)).showSec).toBe(4);
++});
+
+```

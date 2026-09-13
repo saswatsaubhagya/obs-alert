@@ -3,7 +3,7 @@
   "checkpoint_id": "01M2DA25NJ2ZREK1ZGQ949JRAX",
   "strategy": "manual-commit",
   "branch": "master",
-  "checkpoints_count": 7,
+  "checkpoints_count": 8,
   "files_touched": [
     "prisma/migrations/20260913180000_add_socials/migration.sql",
     "prisma/schema.prisma",
@@ -42,13 +42,20 @@
       "compact_transcript": "/2/transcript.jsonl",
       "content_hash": "/2/content_hash.txt",
       "prompt": "/2/prompt.txt"
+    },
+    {
+      "metadata": "/3/metadata.json",
+      "transcript": "/3/full.jsonl",
+      "compact_transcript": "/3/transcript.jsonl",
+      "content_hash": "/3/content_hash.txt",
+      "prompt": "/3/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 122,
-    "cache_creation_tokens": 137366,
-    "cache_read_tokens": 4761788,
-    "output_tokens": 34580,
-    "api_call_count": 61
+    "input_tokens": 124,
+    "cache_creation_tokens": 174985,
+    "cache_read_tokens": 4785979,
+    "output_tokens": 34860,
+    "api_call_count": 62
   }
 }

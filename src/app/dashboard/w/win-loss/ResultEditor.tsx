@@ -8,6 +8,7 @@ import { clampDuration, renderTemplate, templateValues } from '@/lib/template';
 import { saveConfigAction, testFireAction, type ConfigPatch } from '../../actions';
 import { ColorField, Field, Slider, SoundField, Toggle } from '../../controls';
 import CopyButton from '../../CopyButton';
+import { describeResult } from '../../describeResult';
 
 type ResultType = {
   key: string;
@@ -59,12 +60,6 @@ function draftToPatch(d: Draft): ConfigPatch {
     soundUrl: d.soundUrl || null,
     soundVolume: Number(d.soundVolume),
   };
-}
-
-function describeResult(r: { status: number; body: unknown }): string {
-  if (r.status === 200) return `200 — delivered to ${(r.body as { delivered: number }).delivered} overlay connection(s)`;
-  if (r.status === 202) return `202 — skipped: ${(r.body as { skipped: string }).skipped}`;
-  return `400 — ${(r.body as { error: string }).error}`;
 }
 
 export default function ResultEditor({

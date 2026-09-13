@@ -10,6 +10,7 @@ import { clampDuration, renderTemplate, templateValues } from '@/lib/template';
 import { manualSendAction, saveConfigAction, testFireAction, type ConfigPatch } from './actions';
 import { ColorField, Field, Slider, SoundField, Toggle } from './controls';
 import CopyButton from './CopyButton';
+import { describeResult } from './describeResult';
 
 type TypeConfig = {
   key: string;
@@ -79,19 +80,6 @@ const POSITIONS = ['top-left', 'top', 'top-right', 'center', 'bottom-left', 'bot
 const ANIMATIONS = ['fade', 'slide', 'pop'] as const;
 // ponytail: fixed short list; swap for Intl.supportedValuesOf('currency') if someone needs all 150+.
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD', 'JPY', 'BRL', 'MXN'];
-
-function describeResult(r: { status: number; body: unknown }): string {
-  if (r.status === 200) {
-    const b = r.body as { delivered: number };
-    return `200 — delivered to ${b.delivered} overlay connection(s)`;
-  }
-  if (r.status === 202) {
-    const b = r.body as { skipped: string };
-    return `202 — skipped: ${b.skipped}`;
-  }
-  const b = r.body as { error: string };
-  return `400 — ${b.error}`;
-}
 
 export default function Editor({
   types,

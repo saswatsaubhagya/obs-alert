@@ -22,11 +22,8 @@ export function validatePayload(fields: Field[], body: unknown): ValidateResult 
       if (!Number.isFinite(num)) return { ok: false, error: `field "${f.name}" must be a number` };
       values[f.name] = num;
     } else {
-      // Only an actual JSON string is accepted here — a number, boolean,
-      // object, or array is a 400 rather than being silently stringified
-      // (`opponent: 42` is not the same submission as `opponent: "42"`).
-      if (typeof v !== 'string') return { ok: false, error: `field "${f.name}" must be a string` };
-      values[f.name] = v.trim();
+      if (typeof v === 'object') return { ok: false, error: `field "${f.name}" must be a string` };
+      values[f.name] = String(v).trim();
     }
   }
   return { ok: true, values }; // unknown keys dropped

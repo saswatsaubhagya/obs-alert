@@ -60,7 +60,14 @@ test('a win payload with both optional fields absent is valid', () => {
   expect(validatePayload(win, {})).toEqual({ ok: true, values: {} });
 });
 
-test('a numeric opponent is rejected', () => {
-  const r = validatePayload(win, { opponent: 42 });
-  expect(r).toEqual({ ok: false, error: 'field "opponent" must be a string' });
+test('a numeric opponent is coerced to its string form, an object or array opponent is rejected', () => {
+  expect(validatePayload(win, { opponent: 42 })).toEqual({ ok: true, values: { opponent: '42' } });
+  expect(validatePayload(win, { opponent: { name: 'x' } })).toEqual({
+    ok: false,
+    error: 'field "opponent" must be a string',
+  });
+  expect(validatePayload(win, { opponent: ['x'] })).toEqual({
+    ok: false,
+    error: 'field "opponent" must be a string',
+  });
 });

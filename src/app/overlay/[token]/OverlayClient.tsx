@@ -5,6 +5,12 @@ import { createPreviewSlot, createQueue } from '@/lib/queue';
 import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
 import { parseScoreConfig, type ScoreConfig } from '@/lib/scoreConfig';
 import { formatClock, parseTimerConfig, type TimerConfig } from '@/lib/timerConfig';
+import {
+  PLATFORM_META,
+  parseSocialsConfig,
+  type SocialAccount,
+  type SocialsConfig,
+} from '@/lib/socialsConfig';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -160,6 +166,116 @@ export default function OverlayClient({
       ].join(';');
       timerState = { running, remainingMs: Math.max(0, remainingMs), at: Date.now(), config: c };
       paintTimer();
+    };
+
+    /** The socials widget: one element, like the scoreboard and the timer, but
+     *  it also drives itself. The server only ever says "here is the config";
+     *  which account is on screen, and when it steps to the next one, is this
+     *  timer chain. A config frame restarts the chain from the top, so an edit
+     *  in the dashboard is visible immediately instead of at the end of the
+     *  current lap. */
+    let socials: {
+      el: HTMLDivElement;
+      icon: SVGSVGElement;
+      label: HTMLElement;
+      handle: HTMLElement;
+    } | null = null;
+    let socialsTimer: ReturnType<typeof setTimeout> | undefined;
+    let socialsIdx = 0;
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    /** Draws a platform glyph. Every value comes from PLATFORM_META — ours,
+     *  never the user's — and is set with setAttribute rather than innerHTML,
+     *  so the icons go through the same no-markup rule as the text. */
+    const paintIcon = (svg: SVGSVGElement, platform: SocialAccount['platform']) => {
+      svg.replaceChildren();
+      for (const shape of PLATFORM_META[platform].icon) {
+        const node = document.createElementNS(SVG_NS, shape.t === 'rect' ? 'rect' : shape.t);
+        if (shape.t === 'path') node.setAttribute('d', shape.d);
+        if (shape.t === 'circle') {
+          node.setAttribute('cx', String(shape.cx));
+          node.setAttribute('cy', String(shape.cy));
+          node.setAttribute('r', String(shape.r));
+        }
+        if (shape.t === 'rect') {
+          node.setAttribute('x', String(shape.x));
+          node.setAttribute('y', String(shape.y));
+          node.setAttribute('width', String(shape.w));
+          node.setAttribute('height', String(shape.h));
+          node.setAttribute('rx', String(shape.rx));
+        }
+        svg.append(node);
+      }
+    };
+
+    const paintSocial = (acc: SocialAccount, c: SocialsConfig) => {
+      if (!socials) return;
+      const meta = PLATFORM_META[acc.platform];
+      socials.el.style.setProperty('--icon', c.useBrandColor ? meta.brand : c.color);
+      socials.label.textContent = meta.label;
+      socials.handle.textContent = acc.handle;
+      if (c.showIcon) paintIcon(socials.icon, acc.platform);
+      socials.el.dataset.icon = c.showIcon ? 'on' : 'off';
+      socials.el.dataset.labels = c.showLabel ? 'on' : 'off';
+    };
+
+    const cycleSocials = (c: SocialsConfig) => {
+      if (!socials) return;
+      if (c.accounts.length === 0) {
+        socials.el.dataset.on = 'off';
+        return;
+      }
+      const acc =
+        c.order === 'random' ? pick(c.accounts) : c.accounts[socialsIdx % c.accounts.length];
+      socialsIdx++;
+      paintSocial(acc, c);
+      socials.el.dataset.on = 'on';
+      // One account with no gap is a permanent plug: nothing left to schedule.
+      if (c.gapSec === 0 && c.accounts.length === 1) return;
+      socialsTimer = setTimeout(() => {
+        if (c.gapSec === 0) {
+          cycleSocials(c);
+          return;
+        }
+        if (socials) socials.el.dataset.on = 'off';
+        socialsTimer = setTimeout(() => cycleSocials(c), c.gapSec * 1000);
+      }, c.showSec * 1000);
+    };
+
+    const showSocials = (raw: unknown) => {
+      // The config arrives over the wire; parseSocialsConfig falls back to the
+      // defaults per field rather than letting a bad value reach cssText.
+      const c: SocialsConfig = parseSocialsConfig(raw);
+      if (!socials) {
+        const el = document.createElement('div');
+        el.className = 'socials';
+        const icon = document.createElementNS(SVG_NS, 'svg');
+        icon.setAttribute('viewBox', '0 0 24 24');
+        icon.setAttribute('class', 'social-icon');
+        const text = document.createElement('div');
+        text.className = 'social-text';
+        const label = document.createElement('div');
+        label.className = 'social-label';
+        const handle = document.createElement('div');
+        handle.className = 'social-handle';
+        text.append(label, handle);
+        el.append(icon, text);
+        root.append(el);
+        socials = { el, icon, label, handle };
+      }
+      socials.el.className = `socials anim-${c.anim}`;
+      socials.el.style.cssText = [
+        POS[c.pos] ?? POS['bottom-left'],
+        `--fg:${c.color}`,
+        `--label:${c.labelColor}`,
+        `--bg:${c.bg}`,
+        `--font:${c.font}`,
+        `--size:${c.size}px`,
+      ].join(';');
+      clearTimeout(socialsTimer);
+      socialsIdx = 0;
+      cycleSocials(c);
     };
 
     /** Appends card to root, triggers animation, and handles audio.
@@ -394,6 +510,10 @@ export default function OverlayClient({
           showTimer(f.running === true, f.remainingMs ?? 0, f.config);
           return;
         }
+        if (a.widget === 'socials') {
+          showSocials((a as unknown as { config?: unknown }).config);
+          return;
+        }
         queue.push(a);
       } catch {
         /* ignore a malformed frame */
@@ -419,6 +539,10 @@ export default function OverlayClient({
         showTimer(f.running === true, f.remainingMs ?? 0, f.config);
         return;
       }
+      if (a.widget === 'socials') {
+        showSocials((a as unknown as { config?: unknown }).config);
+        return;
+      }
       previewSlot.show(a);
     };
     window.addEventListener('message', onMessage);
@@ -428,6 +552,7 @@ export default function OverlayClient({
       window.removeEventListener('message', onMessage);
       previewSlot.clear();
       clearInterval(ticking);
+      clearTimeout(socialsTimer);
     };
   }, [token, widget]);
 
@@ -469,6 +594,24 @@ export default function OverlayClient({
         .timer[data-labels="off"] .timer-label{display:none}
         .timer[data-warn="on"] .timer-time{color:var(--warn);animation:timer-pulse 1s ease-in-out infinite}
         @keyframes timer-pulse{50%{opacity:.55}}
+
+        .socials{position:fixed;display:flex;align-items:center;gap:.45em;
+          padding:.3em .6em;border-radius:.25em;background:var(--bg);
+          font-family:var(--font);font-size:var(--size);color:var(--fg);
+          line-height:1.05;white-space:nowrap;opacity:0;
+          transition:opacity .4s ease, translate .4s ease, scale .4s ease}
+        .socials[data-on="on"]{opacity:1}
+        .socials.anim-slide{translate:0 14px}
+        .socials.anim-slide[data-on="on"]{translate:0 0}
+        .socials.anim-pop{scale:.88}
+        .socials.anim-pop[data-on="on"]{scale:1}
+        .social-icon{width:1.15em;height:1.15em;flex:none;fill:none;
+          stroke:var(--icon);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+        .socials[data-icon="off"] .social-icon{display:none}
+        .social-label{font-size:.3em;font-weight:800;letter-spacing:.2em;
+          text-transform:uppercase;color:var(--label);opacity:.7;margin-bottom:.25em}
+        .socials[data-labels="off"] .social-label{display:none}
+        .social-handle{font-weight:800;letter-spacing:-.01em}
 
         .result{position:fixed;inset:0;display:grid;place-items:center;
           font-family:var(--font);color:var(--fg);opacity:0;transition:opacity .3s}

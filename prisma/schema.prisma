@@ -32,6 +32,10 @@ model User {
   timerEndsAt      DateTime?
   timerRemainingMs Int           @default(0)
   timerConfig      Json?
+  // The socials widget's rotating plug list plus its appearance. Json, read and
+  // written whole by src/lib/socialsConfig.ts; nothing about it is queried and
+  // nothing about it moves server-side (the rotation runs in the overlay).
+  socialsConfig    Json?
   overlays         Overlay[]
   ingestKeys       IngestKey[]
   alertConfigs     AlertConfig[]

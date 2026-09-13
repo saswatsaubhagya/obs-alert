@@ -1,0 +1,9 @@
+can we build win and loose animation for obs overlay . ALso for this i guess we need to rework the ui a bit. create a left panel . rather puting this on navbar move those to calapsabale side panel. we can have a menu widgets .in future we will add multiple widgets. currently we have one widget called alert . and we are going to build win losse animation widget
+
+---
+
+yes
+
+---
+
+looks good

@@ -1,7 +1,7 @@
 export type FieldType = 'string' | 'number';
 export type Field = { name: string; type: FieldType; required: boolean };
 
-export type Widget = 'alerts' | 'result';
+export type Widget = 'alerts' | 'result' | 'score';
 
 /** Every widget, in sidebar order. One overlay token serves them all; a
  *  `?w=<id>` on the overlay URL narrows a Browser Source to a single widget,
@@ -10,6 +10,7 @@ export type Widget = 'alerts' | 'result';
 export const WIDGETS: readonly { id: Widget; label: string; href: string }[] = [
   { id: 'alerts', label: 'Alerts', href: '/dashboard/w/alerts' },
   { id: 'result', label: 'Win / Loss', href: '/dashboard/w/win-loss' },
+  { id: 'score', label: 'Scoreboard', href: '/dashboard/w/score' },
 ];
 
 /** Narrows an untrusted `?w=` value to a Widget, or null for "all widgets". */

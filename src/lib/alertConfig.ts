@@ -46,7 +46,7 @@ const ANIMS: Style['anim'][] = ['fade', 'slide', 'pop'];
 // `background: var(--bg)`, which *would* load a url()). Every legitimate value
 // — `#31d0aa`, `rgba(12,12,16,0.86)`, `linear-gradient(...)`,
 // `system-ui, sans-serif` — passes.
-const CSS_UNSAFE = /[;{}<>\\]|[\r\n]|\/\*|\b(?:url|image-set|-webkit-image-set|expression|element|src)\s*\(/i;
+export const CSS_UNSAFE = /[;{}<>\\]|[\r\n]|\/\*|\b(?:url|image-set|-webkit-image-set|expression|element|src)\s*\(/i;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);

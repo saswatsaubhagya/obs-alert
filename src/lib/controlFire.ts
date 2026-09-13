@@ -1,10 +1,10 @@
-// The OBS control dock's one endpoint. Deliberately narrower than
+// The OBS control dock's fire endpoint. Deliberately narrower than
 // src/lib/apiAlert.ts: its credential travels in a URL that lives pinned in a
 // dock and is easy to leak on stream, so it can fire result widgets and
 // nothing else.
-import prisma from './db';
+import { authorizeControl } from './control';
 import { BUILT_IN, EVENT_TYPE_KEYS } from './eventTypes';
-import { take } from './ratelimit';
+import { adjustScore } from './score';
 import { sendAlert } from './sendAlert';
 
 const MAX_BODY = 64 * 1024;
@@ -20,20 +20,10 @@ export async function handleControlFire(req: Request, token: string): Promise<Re
   let overlayId: string | undefined;
 
   try {
-    const overlay = token.trim()
-      ? await prisma.overlay.findUnique({ where: { controlToken: token.trim() } })
-      : null;
-    // Identical body for missing and unknown: no oracle for token probing.
-    if (!overlay) return Response.json({ error: 'invalid control token' }, { status: 401 });
+    const auth = await authorizeControl(token);
+    if (auth instanceof Response) return auth;
+    const overlay = auth;
     overlayId = overlay.id;
-
-    const gate = take(`control:${overlay.id}`);
-    if (!gate.ok) {
-      return Response.json(
-        { error: 'rate limit exceeded' },
-        { status: 429, headers: { 'retry-after': String(gate.retryAfter) } }
-      );
-    }
 
     const raw = await req.text();
     if (Buffer.byteLength(raw) > MAX_BODY) {
@@ -73,8 +63,13 @@ export async function handleControlFire(req: Request, token: string): Promise<Re
         : {}),
     };
     const result = await sendAlert(overlay.userId, body, 'control');
-    console.log(`control ${overlay.id} -> ${result.status}`);
-    return Response.json(result.body, { status: result.status });
+    // A fired result is what the scoreboard counts, so the tally moves with the
+    // alert rather than needing a second click. It moves even on a 202 (the
+    // alert type is switched off): the match still happened. The dock's ±
+    // buttons exist to correct a misfire.
+    const score = await adjustScore(overlay.userId, key === 'win' ? 'win' : 'lose', 1);
+    console.log(`control ${overlay.id} -> ${result.status} (${score.wins}-${score.losses})`);
+    return Response.json({ ...(result.body as object), score }, { status: result.status });
   } catch (err) {
     // Never let an exception reach Next's default error handling: it may log
     // the request URL, and the URL carries the control token. Log the overlay

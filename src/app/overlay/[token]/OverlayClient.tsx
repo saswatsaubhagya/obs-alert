@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { createPreviewSlot, createQueue } from '@/lib/queue';
 import { PRESETS, type Preset, type Widget } from '@/lib/eventTypes';
+import { parseScoreConfig, type ScoreConfig } from '@/lib/scoreConfig';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -16,6 +17,22 @@ const POS: Record<string, string> = {
 };
 
 const RESULT_PRESETS = new Set<Preset>(PRESETS);
+
+/** Confetti palette. Deliberately not the user's accent alone: a real cannon
+ *  throws mixed colours. The accent still leads, so the burst reads as theirs. */
+const CONFETTI_COLORS = ['#ffd166', '#31d0aa', '#4cc9f0', '#ff5c8a', '#f7f7ff', '#b892ff'];
+
+/** The four cannons, one per corner, aimed inward. Offsets are vw/vh so a
+ *  burst covers the same fraction of any Browser Source size. */
+const CANNONS: readonly { x: string; y: string; dx: [number, number]; dy: [number, number] }[] = [
+  { x: '0%', y: '100%', dx: [14, 78], dy: [-86, -22] },
+  { x: '100%', y: '100%', dx: [-78, -14], dy: [-86, -22] },
+  { x: '0%', y: '0%', dx: [14, 78], dy: [22, 70] },
+  { x: '100%', y: '0%', dx: [-78, -14], dy: [22, 70] },
+];
+
+const rand = (min: number, max: number) => min + Math.random() * (max - min);
+const pick = <T,>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
 
 export default function OverlayClient({
   token,
@@ -35,6 +52,60 @@ export default function OverlayClient({
      *  Applied to the live and preview lanes alike, so the dashboard preview
      *  shows exactly what this source would show on stream. */
     const accepts = (a: AlertPayload) => widget === null || a.widget === widget;
+
+    /** The scoreboard: one element that is updated in place and never leaves.
+     *  Created on the first score frame, so a source pinned to another widget
+     *  (or one whose user has never scored) renders nothing at all. Every
+     *  frame carries the whole config, so an appearance change lands the same
+     *  way a count change does: no reload of the Browser Source. */
+    let board: { el: HTMLDivElement; parts: Record<string, HTMLElement> } | null = null;
+
+    const showScore = (wins: number, losses: number, raw: unknown) => {
+      // The config arrives over the wire; parseScoreConfig falls back to the
+      // defaults per field rather than letting a bad value reach cssText.
+      const c: ScoreConfig = parseScoreConfig(raw);
+      if (!board) {
+        const el = document.createElement('div');
+        el.className = 'score';
+        const parts: Record<string, HTMLElement> = {};
+        const side = (which: 'w' | 'l') => {
+          const col = document.createElement('div');
+          col.className = 'score-side';
+          const label = document.createElement('div');
+          label.className = 'score-label';
+          const n = document.createElement('div');
+          n.className = `score-n score-${which}`;
+          col.append(label, n);
+          parts[`${which}Label`] = label;
+          parts[which] = n;
+          return col;
+        };
+        const left = side('w');
+        const sep = document.createElement('div');
+        sep.className = 'score-sep';
+        parts.sep = sep;
+        const right = side('l');
+        el.append(left, sep, right);
+        root.append(el);
+        board = { el, parts };
+      }
+
+      board.el.style.cssText = [
+        POS[c.pos] ?? POS.top,
+        `--win:${c.winColor}`,
+        `--loss:${c.lossColor}`,
+        `--label:${c.labelColor}`,
+        `--bg:${c.bg}`,
+        `--font:${c.font}`,
+        `--size:${c.size}px`,
+      ].join(';');
+      board.parts.w.textContent = String(wins);
+      board.parts.l.textContent = String(losses);
+      board.parts.sep.textContent = c.separator;
+      board.parts.wLabel.textContent = c.winLabel;
+      board.parts.lLabel.textContent = c.lossLabel;
+      board.el.dataset.labels = c.showLabels ? 'on' : 'off';
+    };
 
     /** Appends card to root, triggers animation, and handles audio.
      *  Returns the { card, audio } shape for scheduleHide to work on both
@@ -139,15 +210,60 @@ export default function OverlayClient({
       card.append(ring, inner);
 
       if (preset === 'confetti') {
-        for (let i = 0; i < 30; i++) {
+        // Every value below is ours, not the user's — no injection surface.
+        // Layer 1: a slow fall over the whole frame, so the celebration keeps
+        // going after the bursts have landed.
+        for (let i = 0; i < 44; i++) {
           const bit = document.createElement('span');
-          bit.className = 'confetti-bit';
-          // Every value here is ours, not the user's — no injection surface.
+          bit.className = 'confetti-bit fall';
           bit.style.left = `${Math.random() * 100}%`;
-          bit.style.animationDelay = `${Math.random() * 600}ms`;
-          bit.style.animationDuration = `${1400 + Math.random() * 1200}ms`;
-          bit.style.setProperty('--spin', `${Math.random() * 720 - 360}deg`);
-          bit.style.opacity = String(0.6 + Math.random() * 0.4);
+          bit.style.background = pick(CONFETTI_COLORS);
+          bit.style.animationDelay = `${Math.random() * 900}ms`;
+          bit.style.animationDuration = `${1800 + Math.random() * 1800}ms`;
+          bit.style.setProperty('--spin', `${rand(-720, 720)}deg`);
+          bit.style.setProperty('--sway', `${rand(-12, 12)}vw`);
+          bit.style.opacity = String(0.65 + Math.random() * 0.35);
+          if (i % 3 === 0) bit.style.borderRadius = '50%';
+          if (i % 4 === 0) bit.style.height = '9px';
+          card.append(bit);
+        }
+        // Layer 2: four corner cannons fired inward, then gravity takes them.
+        for (const c of CANNONS) {
+          for (let i = 0; i < 18; i++) {
+            const bit = document.createElement('span');
+            bit.className = 'confetti-bit burst';
+            bit.style.left = c.x;
+            bit.style.top = c.y;
+            bit.style.background = pick(CONFETTI_COLORS);
+            bit.style.animationDelay = `${Math.random() * 260}ms`;
+            bit.style.animationDuration = `${1500 + Math.random() * 900}ms`;
+            bit.style.setProperty('--dx', `${rand(c.dx[0], c.dx[1])}vw`);
+            bit.style.setProperty('--dy', `${rand(c.dy[0], c.dy[1])}vh`);
+            bit.style.setProperty('--spin', `${rand(-900, 900)}deg`);
+            if (i % 3 === 0) bit.style.borderRadius = '50%';
+            card.append(bit);
+          }
+        }
+      }
+
+      if (preset === 'glitch') {
+        // The loss counterpart: a dark vignette closing in, plus embers/ash
+        // drifting down instead of confetti going up.
+        const vig = document.createElement('div');
+        vig.className = 'result-vignette';
+        card.append(vig);
+        for (let i = 0; i < 34; i++) {
+          const bit = document.createElement('span');
+          bit.className = 'ash-bit';
+          bit.style.left = `${Math.random() * 100}%`;
+          bit.style.animationDelay = `${Math.random() * 1200}ms`;
+          bit.style.animationDuration = `${2200 + Math.random() * 2000}ms`;
+          bit.style.setProperty('--sway', `${rand(-8, 8)}vw`);
+          bit.style.setProperty('--spin', `${rand(-200, 200)}deg`);
+          const px = 3 + Math.random() * 4;
+          bit.style.width = `${px}px`;
+          bit.style.height = `${px}px`;
+          if (i % 4 === 0) bit.style.background = 'var(--accent)';
           card.append(bit);
         }
       }
@@ -210,7 +326,15 @@ export default function OverlayClient({
     es.onmessage = (e) => {
       try {
         const a = JSON.parse(e.data) as AlertPayload;
-        if (accepts(a)) queue.push(a);
+        if (!accepts(a)) return;
+        // A score frame is state, not an alert: it must never enter the queue
+        // (nothing would ever advance it) and never expires.
+        if (a.widget === 'score') {
+          const f = a as unknown as { wins?: number; losses?: number; config?: unknown };
+          showScore(f.wins ?? 0, f.losses ?? 0, f.config);
+          return;
+        }
+        queue.push(a);
       } catch {
         /* ignore a malformed frame */
       }
@@ -221,7 +345,16 @@ export default function OverlayClient({
       if (e.origin !== window.location.origin) return;
       if (e.data?.kind !== 'preview-alert') return;
       const a = e.data.alert as AlertPayload;
-      if (accepts(a)) previewSlot.show(a);
+      if (!accepts(a)) return;
+      // Same split as the live lane: a score preview paints the board rather
+      // than playing through the preview slot, so the dashboard shows exactly
+      // what a Browser Source would.
+      if (a.widget === 'score') {
+        const f = a as unknown as { wins?: number; losses?: number; config?: unknown };
+        showScore(f.wins ?? 0, f.losses ?? 0, f.config);
+        return;
+      }
+      previewSlot.show(a);
     };
     window.addEventListener('message', onMessage);
 
@@ -248,6 +381,17 @@ export default function OverlayClient({
         .text{font-weight:700;line-height:1.2;word-break:break-word}
         .message{margin-top:10px;font-size:.5em;opacity:.85;word-break:break-word}
 
+        .score{position:fixed;display:flex;align-items:center;gap:.3em;
+          padding:.2em .55em;border-radius:.22em;background:var(--bg);
+          font-family:var(--font);font-size:var(--size);font-weight:900;
+          line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+        .score-side{display:grid;justify-items:center;gap:.12em}
+        .score-label{font-size:.22em;font-weight:800;letter-spacing:.2em;
+          text-transform:uppercase;color:var(--label);opacity:.75;white-space:nowrap}
+        .score[data-labels="off"] .score-label{display:none}
+        .score-w{color:var(--win)} .score-l{color:var(--loss)}
+        .score-sep{color:var(--label);opacity:.45}
+
         .result{position:fixed;inset:0;display:grid;place-items:center;
           font-family:var(--font);color:var(--fg);opacity:0;transition:opacity .3s}
         .result.in{opacity:1}
@@ -267,10 +411,40 @@ export default function OverlayClient({
           animation:slam .38s cubic-bezier(.2,1.5,.4,1) both}
         @keyframes slam{from{scale:2.6;opacity:0}60%{scale:.94;opacity:1}to{scale:1;opacity:1}}
 
-        .confetti-bit{position:absolute;top:-4vh;width:10px;height:16px;
-          background:var(--accent);border-radius:2px;animation-name:fall;
-          animation-timing-function:linear;animation-fill-mode:forwards}
-        @keyframes fall{to{transform:translateY(112vh) rotate(var(--spin))}}
+        .confetti-bit{position:absolute;width:10px;height:16px;
+          background:var(--accent);border-radius:2px;animation-fill-mode:both}
+        .confetti-bit.fall{top:-6vh;animation-name:fall;animation-timing-function:linear}
+        @keyframes fall{
+          0%{transform:translate3d(0,0,0) rotate(0deg)}
+          50%{transform:translate3d(var(--sway),56vh,0) rotate(calc(var(--spin) * .5))}
+          100%{transform:translate3d(0,118vh,0) rotate(var(--spin))}}
+        /* Cannon: launch on an ease-out, then let gravity carry it off-frame. */
+        .confetti-bit.burst{animation-name:burst;
+          animation-timing-function:cubic-bezier(.12,.72,.32,1)}
+        @keyframes burst{
+          0%{transform:translate3d(0,0,0) rotate(0deg) scale(.6);opacity:1}
+          55%{transform:translate3d(var(--dx),var(--dy),0)
+            rotate(calc(var(--spin) * .55)) scale(1);opacity:1}
+          100%{transform:translate3d(calc(var(--dx) * 1.15),calc(var(--dy) + 75vh),0)
+            rotate(var(--spin)) scale(1);opacity:0}}
+
+        /* Loss: the whole layer shudders once, ash falls, the frame darkens. */
+        .preset-glitch.in{animation:shudder .5s cubic-bezier(.36,.07,.19,.97) both}
+        @keyframes shudder{0%,100%{translate:0 0}
+          12%{translate:-9px 3px}28%{translate:8px -4px}44%{translate:-6px -2px}
+          62%{translate:5px 3px}80%{translate:-2px 0}}
+        .result-vignette{position:absolute;inset:0;pointer-events:none;
+          background:radial-gradient(ellipse at center,transparent 32%,rgba(0,0,0,.82) 100%);
+          opacity:0}
+        .preset-glitch.in .result-vignette{animation:vignette 1.1s ease-out both}
+        @keyframes vignette{0%{opacity:0;scale:1.4}60%{opacity:1;scale:1}100%{opacity:.85;scale:1}}
+        .ash-bit{position:absolute;top:-4vh;width:4px;height:4px;border-radius:50%;
+          background:rgba(210,210,220,.55);animation-name:ash;
+          animation-timing-function:linear;animation-fill-mode:both}
+        @keyframes ash{
+          0%{transform:translate3d(0,0,0) rotate(0deg);opacity:0}
+          15%{opacity:.9}
+          100%{transform:translate3d(var(--sway),116vh,0) rotate(var(--spin));opacity:0}}
 
         .preset-glitch .result-text{position:relative}
         .preset-glitch.in .result-text{animation:jitter .28s steps(2,end) 6}

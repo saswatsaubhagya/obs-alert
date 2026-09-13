@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { describeResult } from '../../dashboard/describeResult';
 import { resolveOpponent } from './resolveOpponent';
 
@@ -42,6 +42,23 @@ export default function Dock({ token }: { token: string }) {
   const opponent = resolveOpponent(draft, stored);
   const [status, setStatus] = useState('');
   const [firing, setFiring] = useState('');
+  const [score, setScore] = useState<{ wins: number; losses: number } | null>(null);
+
+  // The dock is the thing people click, so it shows the same tally the
+  // scoreboard widget shows. Server-owned: every response carries the new
+  // score, so the two cannot drift.
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/control/${token}/score`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (live && s) setScore(s);
+      })
+      .catch(() => {}); // an unreachable server already shows up on the next click
+    return () => {
+      live = false;
+    };
+  }, [token]);
 
   function onOpponent(v: string) {
     setDraft(v); // what the user sees — never depends on storage succeeding
@@ -57,7 +74,9 @@ export default function Dock({ token }: { token: string }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(opponent.trim() ? { type, opponent: opponent.trim() } : { type }),
       });
-      setStatus(describeResult({ status: res.status, body: await res.json() }));
+      const body = await res.json();
+      if (body?.score) setScore(body.score);
+      setStatus(describeResult({ status: res.status, body }));
     } catch {
       // A dock left open through a laptop sleep or an app restart is the
       // normal case here, not an exceptional one.
@@ -66,6 +85,52 @@ export default function Dock({ token }: { token: string }) {
       setFiring('');
     }
   }
+
+  /** ± and reset. Same shape as fire(): the server returns the new score, the
+   *  dock never computes one locally. */
+  async function nudge(type: 'win' | 'lose' | 'reset', delta: number) {
+    setFiring(`${type}${delta}`);
+    setStatus('');
+    try {
+      const res = await fetch(`/api/control/${token}/score`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(type === 'reset' ? { type } : { type, delta }),
+      });
+      const body = await res.json();
+      if (res.ok) setScore(body);
+      else setStatus(describeResult({ status: res.status, body }));
+    } catch {
+      setStatus('could not reach the server — is it running?');
+    } finally {
+      setFiring('');
+    }
+  }
+
+  const counter = (label: string, type: 'win' | 'lose', value: number, cls: string) => (
+    <div className={`dock-count ${cls}`}>
+      <span className="dock-count-label">{label}</span>
+      <button
+        type="button"
+        className="dock-step"
+        onClick={() => nudge(type, -1)}
+        disabled={firing !== '' || value === 0}
+        aria-label={`Decrease ${label}`}
+      >
+        −
+      </button>
+      <span className="dock-count-value">{value}</span>
+      <button
+        type="button"
+        className="dock-step"
+        onClick={() => nudge(type, 1)}
+        disabled={firing !== ''}
+        aria-label={`Increase ${label}`}
+      >
+        +
+      </button>
+    </div>
+  );
 
   return (
     <main className="dock">
@@ -87,6 +152,21 @@ export default function Dock({ token }: { token: string }) {
           LOSE
         </button>
       </div>
+
+      {score ? (
+        <div className="dock-score">
+          {counter('Wins', 'win', score.wins, 'dock-win')}
+          {counter('Losses', 'lose', score.losses, 'dock-lose')}
+          <button
+            type="button"
+            className="dock-reset"
+            onClick={() => nudge('reset', 0)}
+            disabled={firing !== '' || (score.wins === 0 && score.losses === 0)}
+          >
+            Reset
+          </button>
+        </div>
+      ) : null}
 
       <label className="dock-field">
         <span>Opponent (optional)</span>

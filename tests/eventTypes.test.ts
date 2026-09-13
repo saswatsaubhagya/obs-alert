@@ -53,8 +53,11 @@ test('parseWidget accepts only known widget ids, everything else is all-widgets'
   }
 });
 
-test('every widget in WIDGETS is a widget some event type actually renders', () => {
+test('every event-driven widget in WIDGETS is one some event type renders', () => {
   const used = new Set(Object.values(BUILT_IN).map((t) => t.widget));
-  for (const w of WIDGETS) expect(used.has(w.id), w.id).toBe(true);
-  expect(WIDGETS.length).toBe(used.size);
+  // 'score' is the exception on purpose: it renders server-held state, not an
+  // event, so no BUILT_IN entry points at it.
+  const driven = WIDGETS.filter((w) => w.id !== 'score');
+  for (const w of driven) expect(used.has(w.id), w.id).toBe(true);
+  expect(driven.length).toBe(used.size);
 });

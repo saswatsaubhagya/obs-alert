@@ -897,6 +897,61 @@ input[type='color'].swatch::-moz-color-swatch {
 .dock-lose:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dock-lose-accent) 28%, transparent);
 }
+.dock-score {
+  display: grid;
+  gap: 8px;
+}
+.dock-count {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.dock-count-label {
+  font-size: 12.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.dock-count-value {
+  min-width: 2ch;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.dock-count.dock-win .dock-count-value {
+  color: var(--dock-win-accent);
+}
+.dock-count.dock-lose .dock-count-value {
+  color: var(--dock-lose-accent);
+}
+.dock-step {
+  width: 38px;
+  height: 38px;
+  font-size: 20px;
+  font-weight: 800;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  color: var(--fg);
+}
+.dock-step:disabled {
+  opacity: 0.4;
+}
+.dock-reset {
+  justify-self: end;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  color: var(--fg-muted);
+}
+.dock-reset:disabled {
+  opacity: 0.4;
+}
 .dock-field {
   display: grid;
   gap: 6px;

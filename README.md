@@ -77,11 +77,25 @@ drops.
 Settings also shows a dock URL (`/control/<control token>`) that adds a small
 panel with WIN/LOSE buttons to fire result widgets on demand — useful during
 a live match when you'd rather click a button than wait on an integration.
+The dock also shows the running win/loss tally with ± buttons and a Reset;
+firing WIN or LOSE counts itself, so the ± buttons are there to fix a
+misfire.
 Add it in OBS via **Docks → Custom Browser Docks**, pasting the dock URL. The
 control token is a separate credential from the overlay token above — it is
 a *write* credential, so treat it like a password: never put it in a browser
 source, never show it on stream, and rotate it from Settings if it ever
 leaks.
+
+## The scoreboard widget
+
+**Scoreboard** in the sidebar has its own Browser Source URL
+(`/overlay/<token>?w=score`) showing a running tally that stays on screen.
+It is customisable from that page: WIN/LOSS labels (their text, or hidden
+entirely), separator, colours, background, font, size and screen position,
+with a live preview. It is server-held state, not an alert: a source that opens
+(or reconnects) is sent the current score immediately, and every change is
+pushed to every overlay of the account. The score moves from the OBS control
+dock, or automatically when a result is fired from it.
 
 ## Firing an alert
 

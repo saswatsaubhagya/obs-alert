@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M2CETEFM5XKR3JMH8GYC8GZE",
+  "strategy": "manual-commit",
+  "branch": "feat/widgets-win-loss",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tests/eventTypes.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 15375,
+    "cache_read_tokens": 2428186,
+    "output_tokens": 7321,
+    "api_call_count": 17,
+    "subagent_tokens": {
+      "input_tokens": 42,
+      "cache_creation_tokens": 44403,
+      "cache_read_tokens": 147115,
+      "output_tokens": 2445,
+      "api_call_count": 5
+    }
+  }
+}

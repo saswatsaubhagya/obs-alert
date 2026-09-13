@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { createPreviewSlot, createQueue } from '@/lib/queue';
+import { PRESETS, type Preset } from '@/lib/eventTypes';
 import type { AlertPayload } from '@/lib/render';
 
 const POS: Record<string, string> = {
@@ -14,12 +15,31 @@ const POS: Record<string, string> = {
   'bottom-right': 'bottom:6vh;right:4vw',
 };
 
+const RESULT_PRESETS = new Set<Preset>(PRESETS);
+
 export default function OverlayClient({ token }: { token: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
+
+    /** Appends card to root, triggers animation, and handles audio.
+     *  Returns the { card, audio } shape for scheduleHide to work on both
+     *  renderers identically. */
+    const presentCard = (card: HTMLDivElement, a: AlertPayload) => {
+      root.append(card);
+      requestAnimationFrame(() => card.classList.add('in'));
+
+      let audio: HTMLAudioElement | undefined;
+      if (a.soundUrl) {
+        audio = new Audio(a.soundUrl);
+        audio.volume = Math.min(1, Math.max(0, (a.soundVolume ?? 80) / 100));
+        void audio.play().catch(() => {}); // autoplay refusal must not stall the queue
+      }
+
+      return { card, audio };
+    };
 
     /** Builds the alert DOM and starts it animating in. Every dynamic value is
      *  set with textContent or a style property — never innerHTML — so donor
@@ -64,19 +84,8 @@ export default function OverlayClient({ token }: { token: string }) {
         card.append(m);
       }
 
-      root.append(card);
-      requestAnimationFrame(() => card.classList.add('in'));
-
-      let audio: HTMLAudioElement | undefined;
-      if (a.soundUrl) {
-        audio = new Audio(a.soundUrl);
-        audio.volume = Math.min(1, Math.max(0, (a.soundVolume ?? 80) / 100));
-        void audio.play().catch(() => {}); // autoplay refusal must not stall the queue
-      }
-
-      return { card, audio };
+      return presentCard(card, a);
     };
-    const RESULT_PRESETS = new Set(['confetti', 'slam', 'glitch']);
 
     /** The result widget: a full-viewport layer rather than a positioned card.
      *  `pos`, `width` and `radius` are meaningless here and are ignored. Same
@@ -130,17 +139,7 @@ export default function OverlayClient({ token }: { token: string }) {
         }
       }
 
-      root.append(card);
-      requestAnimationFrame(() => card.classList.add('in'));
-
-      let audio: HTMLAudioElement | undefined;
-      if (a.soundUrl) {
-        audio = new Audio(a.soundUrl);
-        audio.volume = Math.min(1, Math.max(0, (a.soundVolume ?? 80) / 100));
-        void audio.play().catch(() => {});
-      }
-
-      return { card, audio };
+      return presentCard(card, a);
     };
 
     /** Frames choose their renderer; everything downstream (queueing, hiding,

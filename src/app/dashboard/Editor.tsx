@@ -155,6 +155,7 @@ export default function Editor({
       const alert: AlertPayload = {
         id: 'preview',
         eventType: selectedKey,
+        widget: 'alerts',
         title: draft.titleTemplate ? renderTemplate(draft.titleTemplate, forTemplate, draft.locale) : '',
         text: renderTemplate(draft.template, forTemplate, draft.locale),
         message: typeof values.message === 'string' ? values.message : '',

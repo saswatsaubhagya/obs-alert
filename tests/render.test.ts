@@ -88,3 +88,18 @@ test('a null title template yields an empty title', () => {
   const a = renderAlert({ eventTypeKey: 'follow', values: { name: 'b' }, config: { ...cfg, titleTemplate: null } });
   expect(a.title).toBe('');
 });
+
+test('an alert type renders a frame tagged for the alerts widget', () => {
+  const out = renderAlert({ eventTypeKey: 'donation', values: { name: 'bob', amount: 5 }, config: cfg });
+  expect(out.widget).toBe('alerts');
+});
+
+test('win renders a frame tagged for the result widget', () => {
+  const out = renderAlert({
+    eventTypeKey: 'win',
+    values: {},
+    config: { ...cfg, template: 'VICTORY', titleTemplate: 'MATCH RESULT' },
+  });
+  expect(out.widget).toBe('result');
+  expect(out.text).toBe('VICTORY');
+});
